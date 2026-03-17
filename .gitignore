@@ -1,0 +1,80 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+backend/venv/
+backend/.venv/
+venv/
+.venv/
+ENV/
+
+# Environment Variables
+backend/.env
+.env
+.env.local
+.env.*.local
+
+# Database
+backend/data/*.db
+*.db
+*.sqlite
+*.sqlite3
+
+# PDF Storage
+backend/data/pdfs/*.pdf
+*.pdf
+
+# Logs
+*.log
+logs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+frontend/.vite/
+
+# Testing
+.coverage
+.pytest_cache/
+htmlcov/
+
+# Misc
+*.bak
+*.tmp
+.cache/
