@@ -46,9 +46,9 @@ export default function PaperList() {
     setError(null)
     try {
       const data = await fetchPapers(filters)
-      setPapers(data.items || [])
+      setPapers(data.papers || [])
       setTotalResults(data.total || 0)
-      setTotalPages(data.pages || 0)
+      setTotalPages(data.total_pages || 0)
     } catch (err) {
       setError(err.message)
       setPapers([])
@@ -105,7 +105,7 @@ export default function PaperList() {
       const result = await triggerFetch('AI', 20)
       setActionMessage({
         type: 'success',
-        text: `成功抓取 ${result.fetched_count || 0} 篇论文`,
+        text: `成功抓取 ${result.total_fetched || 0} 篇论文`,
       })
       loadPapers()
       loadStats()
@@ -124,7 +124,7 @@ export default function PaperList() {
       const result = await generateSummaries(10)
       setActionMessage({
         type: 'success',
-        text: `已为 ${result.processed_count || 0} 篇论文生成摘要`,
+        text: `已为 ${result.success || 0} 篇论文生成摘要`,
       })
       loadPapers()
     } catch (err) {
@@ -196,14 +196,14 @@ export default function PaperList() {
           <StatCard
             icon={<TrendingUp className="text-purple-500" size={24} />}
             label="近7天新增"
-            value={stats?.recent_papers || 0}
+            value={stats?.recent_papers_count || 0}
             bgColor="bg-purple-50"
             iconBg="bg-purple-100"
           />
           <StatCard
             icon={<FolderOpen className="text-orange-500" size={24} />}
             label="学科分类"
-            value={stats?.category_count || 0}
+            value={Object.keys(stats?.categories || {}).length}
             bgColor="bg-orange-50"
             iconBg="bg-orange-100"
           />
@@ -287,9 +287,12 @@ export default function PaperList() {
           </div>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {papers.map((paper) => (
-              <PaperCard key={paper.id} paper={paper} />
-            ))}
+            {papers.map((paper, i) => {
+              const index = (filters.page - 1) * PAGE_SIZE + i + 1
+              return (
+                <PaperCard key={paper.id} paper={paper} index={index} />
+              )
+            })}
           </div>
         )}
 
