@@ -50,10 +50,10 @@ def record_result(test_num: int, name: str, passed: bool, skipped: bool = False,
         print(f"  详情: {detail}")
 
 
-def make_request(method: str, path: str, **kwargs) -> tuple[int, dict | None, str]:
+def make_request(method: str, path: str, timeout: float = 120.0, **kwargs) -> tuple[int, dict | None, str]:
     """发送 HTTP 请求"""
     try:
-        with httpx.Client(timeout=120) as client:
+        with httpx.Client(timeout=timeout) as client:
             url = f"{BASE_URL}{path}"
             if method == "GET":
                 response = client.get(url, **kwargs)
@@ -151,8 +151,8 @@ def test_05_fetch_papers():
     status_code, data, error = make_request("POST", "/api/fetch", json=payload)
 
     if status_code == 200 and data:
-        fetched = data.get("fetched_count", 0)
-        new = data.get("new_count", 0)
+        fetched = data.get("total_fetched", 0)
+        new = data.get("new_papers", 0)
         message = data.get("message", "")
         print(f"  抓取结果: 获取 {fetched} 篇，新增 {new} 篇")
         record_result(5, "抓取论文", True, detail=message)
@@ -169,7 +169,7 @@ def test_06_fetch_by_category():
     status_code, data, error = make_request("POST", "/api/fetch/categories", json=payload)
 
     if status_code == 200:
-        fetched = data.get("fetched_count", 0) if data else 0
+        fetched = data.get("total_fetched", 0) if data else 0
         record_result(6, "按分类抓取", True, detail=f"抓取 {fetched} 篇论文")
     elif status_code == 404:
         # 如果端点不存在，标记为跳过
@@ -189,8 +189,8 @@ def test_07_paper_list():
         total = data.get("total", 0)
         page = data.get("page", 0)
         page_size = data.get("page_size", 0)
-        total_pages = data.get("pages", 0)
-        papers = data.get("items", [])
+        total_pages = data.get("total_pages", 0)
+        papers = data.get("papers", [])
 
         print(f"  论文总数: {total}")
         print(f"  分页信息: 第 {page} 页，每页 {page_size} 条，共 {total_pages} 页")
@@ -212,7 +212,7 @@ def test_08_pagination():
     status_code, data, error = make_request("GET", "/api/papers?page=1&page_size=5")
 
     if status_code == 200 and data:
-        papers = data.get("items", [])
+        papers = data.get("papers", [])
         if len(papers) <= 5:
             record_result(8, "分页测试", True, detail=f"返回 {len(papers)} 篇论文（<= 5）")
         else:
@@ -304,12 +304,12 @@ def test_13_generate_summaries(skip_ai: bool):
         record_result(13, "批量生成摘要", True, skipped=True, detail="--skip-ai 参数跳过")
         return
 
-    print("  注意: 此测试会调用 AI API，可能需要较长时间...")
-    status_code, data, error = make_request("POST", "/api/papers/generate-summaries?limit=2")
+    print("  注意: 此测试会调用 AI API，可能需要较长时间（最长等待 180 秒）...")
+    status_code, data, error = make_request("POST", "/api/papers/generate-summaries?limit=2", timeout=180.0)
 
     if status_code == 200 and data:
-        processed = data.get("processed_count", 0)
-        errors = data.get("error_count", 0)
+        processed = data.get("processed", 0)
+        errors = data.get("failed", 0)
         message = data.get("message", "")
         print(f"  处理结果: 成功 {processed} 篇，失败 {errors} 篇")
         record_result(13, "批量生成摘要", True, detail=message)
@@ -328,7 +328,7 @@ def test_14_check_summaries(skip_ai: bool):
     status_code, data, error = make_request("GET", "/api/papers?page_size=10")
 
     if status_code == 200 and data:
-        papers = data.get("items", [])
+        papers = data.get("papers", [])
         with_summary = sum(1 for p in papers if p.get("summary"))
         with_tags = sum(1 for p in papers if p.get("tags"))
 
@@ -353,13 +353,13 @@ def test_15_stats():
     if status_code == 200 and data:
         total = data.get("total_papers", 0)
         analyzed = data.get("analyzed_papers", 0)
-        recent = data.get("recent_papers", 0)
-        categories = data.get("category_count", 0)
+        recent = data.get("recent_papers_count", 0)
+        categories = data.get("categories", {})
 
         print(f"  论文总数: {total}")
         print(f"  已分析数: {analyzed}")
         print(f"  近7天新增: {recent}")
-        print(f"  分类数: {categories}")
+        print(f"  分类数: {len(categories)}")
 
         record_result(15, "获取统计", True, detail=f"论文: {total}, 分析: {analyzed}, 新增: {recent}")
     else:
@@ -383,24 +383,24 @@ def test_16_deep_analysis(paper_id: int | None, skip_analysis: bool):
     print("  注意: 此测试会下载 PDF 并调用 AI，耗时 30-120 秒...")
     start_time = time.time()
 
-    status_code, data, error = make_request("POST", f"/api/papers/{paper_id}/analyze?force_refresh=false")
+    status_code, data, error = make_request("POST", f"/api/papers/{paper_id}/analyze?force_refresh=false", timeout=180.0)
 
     elapsed = time.time() - start_time
     print(f"  耗时: {elapsed:.1f} 秒")
 
     if status_code == 200 and data:
-        analysis = data.get("analysis", "")
+        report = data.get("report", "")
         analysis_json = data.get("analysis_json", {})
 
-        if analysis:
-            preview = analysis[:500] + "..." if len(analysis) > 500 else analysis
+        if report:
+            preview = report[:500] + "..." if len(report) > 500 else report
             print(f"  分析报告预览:\n{preview}")
 
         if analysis_json:
             grade = analysis_json.get("overall_grade", "N/A")
             print(f"  总体评级: {grade}")
 
-        record_result(16, "深度分析", True, detail=f"生成 {len(analysis)} 字符报告")
+        record_result(16, "深度分析", True, detail=f"生成 {len(report)} 字符报告")
     else:
         record_result(16, "深度分析", False, detail=error or f"状态码: {status_code}, 数据: {data}")
 
@@ -422,15 +422,15 @@ def test_17_check_analysis(paper_id: int | None, skip_analysis: bool):
     status_code, data, error = make_request("GET", f"/api/papers/{paper_id}")
 
     if status_code == 200 and data:
-        has_analysis = data.get("has_deep_analysis", False)
-        analysis = data.get("deep_analysis", "")
+        has_analysis = data.get("has_analysis", False)
+        analysis_report = data.get("analysis_report", "")
 
-        if has_analysis and analysis:
-            print(f"  has_deep_analysis: {has_analysis}")
-            print(f"  analysis_report 长度: {len(analysis)} 字符")
+        if has_analysis and analysis_report:
+            print(f"  has_analysis: {has_analysis}")
+            print(f"  analysis_report 长度: {len(analysis_report)} 字符")
             record_result(17, "验证分析结果", True, detail="分析数据已保存")
         else:
-            record_result(17, "验证分析结果", False, detail=f"has_analysis={has_analysis}, report_empty={not analysis}")
+            record_result(17, "验证分析结果", False, detail=f"has_analysis={has_analysis}, report_empty={not analysis_report}")
     else:
         record_result(17, "验证分析结果", False, detail=error or f"状态码: {status_code}")
 
