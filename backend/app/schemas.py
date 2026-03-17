@@ -103,6 +103,19 @@ class FetchRequest(BaseModel):
     max_results: int = Field(default=50, ge=1, le=100, description="最大抓取数量")
 
 
+class FetchByCategoriesRequest(BaseModel):
+    """按分类抓取请求。
+
+    从指定的 ArXiv 分类抓取最新论文。
+    """
+
+    categories: List[str] = Field(
+        default=["cs.AI", "cs.CL", "cs.LG", "cs.CV"],
+        description="ArXiv 分类列表",
+    )
+    max_results: int = Field(default=50, ge=1, le=100, description="每个分类最大抓取数量")
+
+
 class FetchResponse(BaseModel):
     """抓取响应。
 

@@ -16,6 +16,7 @@ from app.models import FetchLog, Paper
 from app.schemas import (
     AnalysisRequest,
     AnalysisResponse,
+    FetchByCategoriesRequest,
     FetchRequest,
     FetchResponse,
     PaperCard,
@@ -197,8 +198,7 @@ async def fetch_papers(
 
 @router.post("/fetch/categories", response_model=FetchResponse)
 async def fetch_by_categories(
-    categories: List[str],
-    max_results: int = Query(50, ge=1, le=100),
+    request: FetchByCategoriesRequest,
     db: AsyncSession = Depends(get_db),
 ) -> FetchResponse:
     """按分类抓取论文。
@@ -207,8 +207,8 @@ async def fetch_by_categories(
     """
     result = await ArxivService.fetch_by_categories(
         db=db,
-        categories=categories,
-        max_results=max_results,
+        categories=request.categories,
+        max_results=request.max_results,
     )
 
     return FetchResponse(
