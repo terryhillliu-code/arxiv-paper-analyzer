@@ -2,51 +2,24 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { format } from 'date-fns'
 import { zhCN } from 'date-fns/locale'
-import {
-  ChevronRight,
-  ExternalLink,
-  FileText,
-  Sparkles,
-  RefreshCw,
-  CheckCircle,
-  Clock,
-  Users,
-  Building2,
-  Calendar,
-  Hash,
-  Tag,
-  BookOpen,
-  Target,
-  ThumbsUp,
-  AlertCircle,
-  Rocket,
-} from 'lucide-react'
 import AnalysisReport from '../components/AnalysisReport'
 import { fetchPaperDetail, analyzePaper } from '../api/papers'
 
 // 学科分类颜色映射
 const CATEGORY_COLORS = {
-  'cs.AI': { bg: 'bg-purple-100', text: 'text-purple-700', border: 'border-purple-200' },
-  'cs.CL': { bg: 'bg-blue-100', text: 'text-blue-700', border: 'border-blue-200' },
-  'cs.LG': { bg: 'bg-green-100', text: 'text-green-700', border: 'border-green-200' },
-  'cs.CV': { bg: 'bg-orange-100', text: 'text-orange-700', border: 'border-orange-200' },
-  'cs.NE': { bg: 'bg-red-100', text: 'text-red-700', border: 'border-red-200' },
-  'cs.RO': { bg: 'bg-yellow-100', text: 'text-yellow-700', border: 'border-yellow-200' },
-  'cs.DB': { bg: 'bg-indigo-100', text: 'text-indigo-700', border: 'border-indigo-200' },
-  'cs.DC': { bg: 'bg-teal-100', text: 'text-teal-700', border: 'border-teal-200' },
-  'cs.SE': { bg: 'bg-cyan-100', text: 'text-cyan-700', border: 'border-cyan-200' },
-  'cs.CR': { bg: 'bg-pink-100', text: 'text-pink-700', border: 'border-pink-200' },
-  'stat.ML': { bg: 'bg-emerald-100', text: 'text-emerald-700', border: 'border-emerald-200' },
+  'cs.AI': 'bg-purple-100 text-purple-700',
+  'cs.CL': 'bg-blue-100 text-blue-700',
+  'cs.LG': 'bg-green-100 text-green-700',
+  'cs.CV': 'bg-orange-100 text-orange-700',
+  'cs.NE': 'bg-red-100 text-red-700',
+  'cs.DC': 'bg-teal-100 text-teal-700',
+  'cs.IR': 'bg-sky-100 text-sky-700',
+  'cs.RO': 'bg-yellow-100 text-yellow-700',
+  'cs.SE': 'bg-cyan-100 text-cyan-700',
+  'cs.CR': 'bg-pink-100 text-pink-700',
+  'stat.ML': 'bg-emerald-100 text-emerald-700',
 }
-
-const DEFAULT_COLOR = { bg: 'bg-gray-100', text: 'text-gray-700', border: 'border-gray-200' }
-
-// 评级颜色映射
-const GRADE_COLORS = {
-  A: { bg: 'bg-green-100', text: 'text-green-700', border: 'border-green-300' },
-  B: { bg: 'bg-blue-100', text: 'text-blue-700', border: 'border-blue-300' },
-  C: { bg: 'bg-yellow-100', text: 'text-yellow-700', border: 'border-yellow-300' },
-}
+const DEFAULT_COLOR = 'bg-gray-100 text-gray-600'
 
 export default function PaperDetail() {
   const { id } = useParams()
@@ -60,9 +33,6 @@ export default function PaperDetail() {
   const [analyzing, setAnalyzing] = useState(false)
   const [analysisMessage, setAnalysisMessage] = useState(null)
   const [analysisProgress, setAnalysisProgress] = useState('')
-
-  // 标签页状态
-  const [activeTab, setActiveTab] = useState('analysis')
 
   // 分析进度定时器
   const progressTimerRef = useRef(null)
@@ -92,7 +62,6 @@ export default function PaperDetail() {
     setAnalysisMessage(null)
     setAnalysisProgress('正在初始化...')
 
-    // 进度提示阶段
     const progressPhases = [
       { time: 5000, text: '正在下载 PDF...' },
       { time: 15000, text: '正在提取文本...' },
@@ -101,7 +70,6 @@ export default function PaperDetail() {
       { time: 60000, text: '分析即将完成，请稍候...' },
     ]
 
-    // 设置进度定时器
     progressPhaseRef.current = 0
     const scheduleNextPhase = () => {
       if (progressPhaseRef.current < progressPhases.length) {
@@ -118,17 +86,15 @@ export default function PaperDetail() {
     try {
       const result = await analyzePaper(id, forceRefresh)
       setAnalysisMessage({ type: 'success', text: '分析完成' })
-      // 更新 paper 数据
       setPaper((prev) => ({
         ...prev,
-        deep_analysis: result.analysis,
+        analysis_report: result.report,
         analysis_json: result.analysis_json,
-        has_deep_analysis: true,
+        has_analysis: true,
       }))
     } catch (err) {
       setAnalysisMessage({ type: 'error', text: `分析失败: ${err.message}` })
     } finally {
-      // 清除定时器
       if (progressTimerRef.current) {
         clearTimeout(progressTimerRef.current)
         progressTimerRef.current = null
@@ -147,10 +113,16 @@ export default function PaperDetail() {
     }
   }, [])
 
-  // 格式化日期
-  const formatDate = (dateStr) => {
+  // 格式化中文日期
+  const formatChineseDate = (dateStr) => {
     if (!dateStr) return '未知'
-    return format(new Date(dateStr), 'yyyy年MM月dd日', { locale: zhCN })
+    return format(new Date(dateStr), 'yyyy年M月d日', { locale: zhCN })
+  }
+
+  // 格式化简短日期
+  const formatShortDate = (dateStr) => {
+    if (!dateStr) return '未知'
+    return format(new Date(dateStr), 'yyyy-MM-dd')
   }
 
   // 加载中
@@ -158,7 +130,7 @@ export default function PaperDetail() {
     return (
       <div className="min-h-screen bg-gray-50 flex justify-center items-center">
         <div className="text-center">
-          <div className="w-12 h-12 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mx-auto mb-4" />
+          <div className="w-12 h-12 border-4 border-gray-200 border-t-purple-700 rounded-full animate-spin mx-auto mb-4" />
           <p className="text-gray-500">加载中...</p>
         </div>
       </div>
@@ -171,8 +143,8 @@ export default function PaperDetail() {
       <div className="min-h-screen bg-gray-50 flex justify-center items-center">
         <div className="text-center">
           <p className="text-red-500 mb-4">加载失败: {error}</p>
-          <Link to="/" className="text-blue-600 hover:underline">
-            返回首页
+          <Link to="/" className="text-purple-700 hover:underline">
+            返回列表
           </Link>
         </div>
       </div>
@@ -193,374 +165,312 @@ export default function PaperDetail() {
     authors = [],
     categories = [],
     tags = [],
-    published_date,
-    arxiv_id,
+    publish_date,
+    created_at,
     arxiv_url,
     pdf_url,
     summary,
-    institution,
-    deep_analysis,
+    institutions = [],
+    analysis_report,
     analysis_json,
-    has_deep_analysis,
+    has_analysis,
   } = paper
 
-  return (
-    <div className="min-h-screen bg-gray-50">
-      {/* 面包屑导航 */}
-      <nav className="bg-white border-b border-gray-200">
-        <div className="max-w-5xl mx-auto px-4 py-3">
-          <div className="flex items-center gap-2 text-sm">
-            <Link to="/" className="text-gray-500 hover:text-blue-600 transition-colors">
-              论文列表
-            </Link>
-            <ChevronRight size={16} className="text-gray-400" />
-            <span className="text-gray-700 truncate max-w-md">{title}</span>
-          </div>
-        </div>
-      </nav>
+  const mainTag = tags && tags.length > 0 ? tags[0] : null
 
-      <main className="max-w-5xl mx-auto px-4 py-6 space-y-6">
-        {/* 论文信息卡片 */}
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-          {/* 头部：分类 + 已分析标记 */}
-          <div className="px-6 pt-5 pb-3 flex items-center justify-between border-b border-gray-100">
-            <div className="flex flex-wrap gap-2">
-              {categories.map((cat) => {
-                const colors = CATEGORY_COLORS[cat] || DEFAULT_COLOR
-                return (
-                  <span
-                    key={cat}
-                    className={`px-2.5 py-1 text-xs font-medium rounded ${colors.bg} ${colors.text} ${colors.border} border`}
-                  >
-                    {cat}
-                  </span>
-                )
-              })}
+  return (
+    <div className="min-h-screen bg-gray-50 px-4 py-6">
+      <div className="max-w-4xl mx-auto space-y-6">
+        {/* 顶部返回链接 */}
+        <Link
+          to="/"
+          className="inline-flex items-center gap-1 text-gray-500 hover:text-purple-700 transition-colors"
+        >
+          ← 返回
+        </Link>
+
+        {/* 卡片1：基础信息 */}
+        <div className="bg-white rounded-xl shadow-sm p-6">
+          {/* 右上角主题标签 */}
+          {mainTag && (
+            <div className="float-right">
+              <span className="text-purple-700">{mainTag}</span>
             </div>
-            {has_deep_analysis && (
-              <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-green-100 text-green-700 text-xs font-medium rounded-full">
-                <CheckCircle size={14} />
-                已分析
-              </span>
-            )}
-          </div>
+          )}
 
           {/* 标题 */}
-          <div className="px-6 pt-4">
-            <h1 className="text-2xl font-bold text-gray-900 leading-tight">{title}</h1>
-          </div>
+          <h1 className="text-2xl font-bold text-gray-900 mb-4 clear-right">
+            {title}
+          </h1>
 
-          {/* 元信息网格 */}
-          <div className="px-6 py-4 grid grid-cols-2 gap-4">
-            {/* 作者 */}
-            <div className="flex items-start gap-3">
-              <Users size={18} className="text-gray-400 mt-0.5 shrink-0" />
-              <div>
-                <p className="text-xs text-gray-400 mb-1">作者</p>
-                <p className="text-sm text-gray-700 leading-relaxed">
-                  {authors.slice(0, 8).join('、')}
-                  {authors.length > 8 && <span className="text-gray-400"> 等{authors.length - 8}人</span>}
-                </p>
-              </div>
-            </div>
+          {/* 信息行 */}
+          <div className="space-y-2 text-sm">
+            <p>
+              <span className="font-bold">作者：</span>
+              <span className="text-gray-700">
+                {authors.length > 0 ? authors.join('、') : '未知'}
+              </span>
+            </p>
 
-            {/* 机构 */}
-            {institution && (
-              <div className="flex items-start gap-3">
-                <Building2 size={18} className="text-gray-400 mt-0.5 shrink-0" />
-                <div>
-                  <p className="text-xs text-gray-400 mb-1">机构</p>
-                  <p className="text-sm text-gray-700">{institution}</p>
-                </div>
-              </div>
+            {institutions && institutions.length > 0 && (
+              <p>
+                <span className="font-bold">机构：</span>
+                <span className="text-purple-700 font-bold italic">
+                  {institutions[0]}
+                </span>
+                {institutions.length > 1 && (
+                  <span className="text-gray-700">
+                    、{institutions.slice(1).join('、')}
+                  </span>
+                )}
+              </p>
             )}
 
-            {/* 发布日期 */}
-            <div className="flex items-start gap-3">
-              <Calendar size={18} className="text-gray-400 mt-0.5 shrink-0" />
-              <div>
-                <p className="text-xs text-gray-400 mb-1">发布日期</p>
-                <p className="text-sm text-gray-700">{formatDate(published_date)}</p>
-              </div>
-            </div>
+            <p>
+              <span className="font-bold">发布时间：</span>
+              <span className="text-gray-700">{formatChineseDate(publish_date)}</span>
+            </p>
 
-            {/* ArXiv ID */}
-            <div className="flex items-start gap-3">
-              <Hash size={18} className="text-gray-400 mt-0.5 shrink-0" />
-              <div>
-                <p className="text-xs text-gray-400 mb-1">ArXiv ID</p>
-                <p className="text-sm text-gray-700 font-mono">{arxiv_id}</p>
-              </div>
-            </div>
+            <p>
+              <span className="font-bold">入库时间：</span>
+              <span className="text-gray-700">{formatShortDate(created_at)}</span>
+            </p>
+
+            <p className="flex items-center gap-2 flex-wrap">
+              <span className="font-bold">论文类型：</span>
+              {categories.map((cat) => (
+                <span
+                  key={cat}
+                  className={`px-2 py-0.5 rounded text-xs ${
+                    CATEGORY_COLORS[cat] || DEFAULT_COLOR
+                  }`}
+                >
+                  {cat}
+                </span>
+              ))}
+            </p>
           </div>
 
-          {/* 主题标签 */}
-          {tags.length > 0 && (
-            <div className="px-6 pb-4">
-              <div className="flex items-center gap-2 flex-wrap">
-                <Tag size={16} className="text-gray-400" />
-                {tags.map((tag) => (
-                  <span
-                    key={tag}
-                    className="px-2.5 py-1 bg-gray-100 text-gray-600 text-xs rounded-full"
-                  >
-                    {tag}
-                  </span>
-                ))}
-              </div>
+          {/* 按钮 */}
+          <div className="mt-6 space-y-3">
+            {arxiv_url && (
+              <a
+                href={arxiv_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block w-full border border-gray-300 rounded-lg py-3 text-center text-gray-700 hover:bg-gray-50 transition-colors"
+              >
+                📄 查看 ArXiv 页面
+              </a>
+            )}
+            {pdf_url && (
+              <a
+                href={pdf_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block w-full border border-gray-300 rounded-lg py-3 text-center text-gray-700 hover:bg-gray-50 transition-colors"
+              >
+                📑 下载 PDF
+              </a>
+            )}
+          </div>
+        </div>
+
+        {/* 卡片2：一段话总结 */}
+        <div className="bg-white rounded-xl shadow-sm p-6">
+          <h2 className="text-xl font-bold mb-4 pb-2 border-b border-gray-200">
+            一段话总结
+          </h2>
+          {summary ? (
+            <p className="text-gray-700 leading-relaxed">{summary}</p>
+          ) : (
+            <p className="text-gray-500">暂无总结，请先生成AI摘要</p>
+          )}
+        </div>
+
+        {/* 卡片3：思维导图/论文大纲 */}
+        <div className="bg-white rounded-xl shadow-sm p-6">
+          <h2 className="text-xl font-bold mb-4 pb-2 border-b border-gray-200">
+            思维导图
+          </h2>
+          {analysis_json?.outline ? (
+            <OutlineTree outline={analysis_json.outline} />
+          ) : (
+            <p className="text-gray-500">
+              点击下方按钮生成深度分析后显示
+            </p>
+          )}
+        </div>
+
+        {/* 卡片4：深度分析 */}
+        <div className="bg-white rounded-xl shadow-sm p-6">
+          <h2 className="text-xl font-bold mb-4 pb-2 border-b border-gray-200">
+            深度分析
+          </h2>
+
+          {/* 未分析 */}
+          {!has_analysis && !analyzing && (
+            <button
+              onClick={() => handleAnalyze(false)}
+              className="w-full py-3 bg-purple-700 text-white rounded-lg hover:bg-purple-800 transition-colors"
+            >
+              生成深度分析
+            </button>
+          )}
+
+          {/* 分析中 */}
+          {analyzing && (
+            <div className="py-8 text-center">
+              <div className="w-12 h-12 border-4 border-gray-200 border-t-purple-700 rounded-full animate-spin mx-auto mb-4" />
+              <p className="text-gray-700">{analysisProgress || 'AI正在分析论文...'}</p>
             </div>
           )}
 
-          {/* 一句话总结 */}
-          {summary && (
-            <div className="px-6 pb-4">
-              <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-100 rounded-xl p-4">
-                <p className="text-blue-800 leading-relaxed">{summary}</p>
-              </div>
-            </div>
-          )}
-
-          {/* 操作按钮 */}
-          <div className="px-6 pb-4">
-            <div className="flex flex-wrap items-center gap-3">
-              {/* 主按钮：生成/查看分析 */}
-              {has_deep_analysis ? (
-                <button
-                  onClick={() => setActiveTab('analysis')}
-                  className="inline-flex items-center gap-2 px-5 py-2.5 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+          {/* 已分析 */}
+          {has_analysis && !analyzing && analysis_report && (
+            <>
+              <AnalysisReport report={analysis_report} />
+              {analysisMessage && (
+                <p
+                  className={`mt-4 text-sm ${
+                    analysisMessage.type === 'success'
+                      ? 'text-green-600'
+                      : 'text-red-600'
+                  }`}
                 >
-                  <BookOpen size={18} />
-                  查看深度分析
-                </button>
-              ) : (
-                <button
-                  onClick={() => handleAnalyze(false)}
-                  disabled={analyzing}
-                  className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  {analyzing ? (
-                    <>
-                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                      分析中...
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles size={18} />
-                      生成深度分析
-                    </>
-                  )}
-                </button>
+                  {analysisMessage.text}
+                </p>
               )}
-
-              {/* 重新分析 */}
-              {has_deep_analysis && (
+              <div className="mt-4 pt-4 border-t border-gray-200">
                 <button
                   onClick={() => handleAnalyze(true)}
                   disabled={analyzing}
-                  className="inline-flex items-center gap-2 px-4 py-2.5 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  className="border border-gray-300 rounded-lg px-4 py-2 text-sm text-gray-600 hover:bg-gray-50 transition-colors"
                 >
-                  <RefreshCw size={16} />
                   重新分析
                 </button>
-              )}
-
-              {/* ArXiv 链接 */}
-              {arxiv_url && (
-                <a
-                  href={arxiv_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 px-4 py-2.5 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
-                >
-                  <ExternalLink size={16} />
-                  ArXiv 页面
-                </a>
-              )}
-
-              {/* PDF 链接 */}
-              {pdf_url && (
-                <a
-                  href={pdf_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 px-4 py-2.5 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
-                >
-                  <FileText size={16} />
-                  下载 PDF
-                </a>
-              )}
-            </div>
-
-            {/* 分析状态消息 */}
-            {analysisMessage && (
-              <div
-                className={`mt-3 px-4 py-2 rounded-lg text-sm ${
-                  analysisMessage.type === 'success'
-                    ? 'bg-green-100 text-green-700'
-                    : 'bg-red-100 text-red-700'
-                }`}
-              >
-                {analysisMessage.text}
               </div>
-            )}
-          </div>
+            </>
+          )}
         </div>
 
-        {/* 内容标签页 */}
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-          {/* 标签栏 */}
-          <div className="flex border-b border-gray-200">
-            <button
-              onClick={() => setActiveTab('analysis')}
-              className={`flex-1 px-6 py-3 text-sm font-medium transition-colors ${
-                activeTab === 'analysis'
-                  ? 'text-blue-600 border-b-2 border-blue-600 bg-blue-50/50'
-                  : 'text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              深度分析
-            </button>
-            <button
-              onClick={() => setActiveTab('abstract')}
-              className={`flex-1 px-6 py-3 text-sm font-medium transition-colors ${
-                activeTab === 'abstract'
-                  ? 'text-blue-600 border-b-2 border-blue-600 bg-blue-50/50'
-                  : 'text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              原文摘要
-            </button>
-          </div>
-
-          {/* 标签页内容 */}
-          <div className="p-6">
-            {activeTab === 'analysis' ? (
-              // 深度分析
-              <>
-                {analyzing ? (
-                  <div className="py-12 text-center">
-                    <div className="w-16 h-16 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mx-auto mb-6" />
-                    <p className="text-lg text-gray-700 mb-2">{analysisProgress || 'AI 正在分析...'}</p>
-                    <p className="text-sm text-gray-500 max-w-md mx-auto">
-                      正在阅读论文内容、提取关键信息、生成深度分析报告，预计需要 30-60 秒
-                    </p>
-                  </div>
-                ) : has_deep_analysis && deep_analysis ? (
-                  <AnalysisReport report={deep_analysis} />
-                ) : (
-                  <div className="py-12 text-center">
-                    <Sparkles size={48} className="mx-auto text-gray-300 mb-4" />
-                    <p className="text-gray-500 mb-4">尚未生成深度分析</p>
-                    <button
-                      onClick={() => handleAnalyze(false)}
-                      className="inline-flex items-center gap-2 px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-                    >
-                      <Sparkles size={18} />
-                      生成深度分析
-                    </button>
-                  </div>
-                )}
-              </>
-            ) : (
-              // 原文摘要
-              <div className="bg-gray-50 rounded-xl p-6">
-                <p className="text-gray-700 leading-relaxed whitespace-pre-wrap">
-                  {paper.abstract || paper.summary || '暂无摘要'}
-                </p>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* 结构化评估卡片 */}
-        {has_deep_analysis && analysis_json && (
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-            <div className="px-6 py-4 border-b border-gray-200">
-              <h2 className="text-lg font-semibold text-gray-900">结构化评估</h2>
-            </div>
-            <div className="p-6">
-              {/* 评级 */}
-              {analysis_json.overall_grade && (
-                <div className="mb-6 flex items-center gap-3">
-                  <span className="text-gray-500">总体评级：</span>
-                  <span
-                    className={`px-3 py-1 text-lg font-bold rounded-lg border ${
-                      GRADE_COLORS[analysis_json.overall_grade]?.bg || 'bg-gray-100'
-                    } ${GRADE_COLORS[analysis_json.overall_grade]?.text || 'text-gray-700'} ${
-                      GRADE_COLORS[analysis_json.overall_grade]?.border || 'border-gray-300'
-                    }`}
-                  >
-                    {analysis_json.overall_grade}
-                  </span>
+        {/* 卡片5：综合评估 */}
+        {has_analysis && analysis_json && (
+          <div className="bg-white rounded-xl shadow-sm p-6">
+            <h2 className="text-xl font-bold mb-4 pb-2 border-b border-gray-200">
+              综合评估
+            </h2>
+            <div className="grid grid-cols-2 gap-6">
+              {/* 主要贡献 */}
+              {analysis_json.main_contributions && (
+                <div>
+                  <h3 className="text-sm font-bold text-gray-500 mb-2">
+                    主要贡献
+                  </h3>
+                  <ul className="list-disc list-inside text-sm text-gray-700 space-y-1">
+                    {(Array.isArray(analysis_json.main_contributions)
+                      ? analysis_json.main_contributions
+                      : [analysis_json.main_contributions]
+                    ).map((item, i) => (
+                      <li key={i}>{item}</li>
+                    ))}
+                  </ul>
                 </div>
               )}
 
-              {/* 2列网格 */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {/* 主要贡献 */}
-                {analysis_json.main_contributions && (
-                  <EvalCard
-                    icon={<Target className="text-blue-500" size={20} />}
-                    title="主要贡献"
-                    items={Array.isArray(analysis_json.main_contributions) ? analysis_json.main_contributions : [analysis_json.main_contributions]}
-                    bgColor="bg-blue-50"
-                  />
-                )}
+              {/* 优势 */}
+              {analysis_json.strengths && (
+                <div>
+                  <h3 className="text-sm font-bold text-gray-500 mb-2">优势</h3>
+                  <ul className="list-disc list-inside text-sm text-gray-700 space-y-1">
+                    {(Array.isArray(analysis_json.strengths)
+                      ? analysis_json.strengths
+                      : [analysis_json.strengths]
+                    ).map((item, i) => (
+                      <li key={i}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
 
-                {/* 优势 */}
-                {analysis_json.strengths && (
-                  <EvalCard
-                    icon={<ThumbsUp className="text-green-500" size={20} />}
-                    title="优势"
-                    items={Array.isArray(analysis_json.strengths) ? analysis_json.strengths : [analysis_json.strengths]}
-                    bgColor="bg-green-50"
-                  />
-                )}
+              {/* 不足 */}
+              {analysis_json.limitations && (
+                <div>
+                  <h3 className="text-sm font-bold text-gray-500 mb-2">不足</h3>
+                  <ul className="list-disc list-inside text-sm text-gray-700 space-y-1">
+                    {(Array.isArray(analysis_json.limitations)
+                      ? analysis_json.limitations
+                      : [analysis_json.limitations]
+                    ).map((item, i) => (
+                      <li key={i}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
 
-                {/* 不足 */}
-                {analysis_json.limitations && (
-                  <EvalCard
-                    icon={<AlertCircle className="text-orange-500" size={20} />}
-                    title="不足"
-                    items={Array.isArray(analysis_json.limitations) ? analysis_json.limitations : [analysis_json.limitations]}
-                    bgColor="bg-orange-50"
-                  />
-                )}
-
-                {/* 未来方向 */}
-                {analysis_json.future_directions && (
-                  <EvalCard
-                    icon={<Rocket className="text-purple-500" size={20} />}
-                    title="未来方向"
-                    items={Array.isArray(analysis_json.future_directions) ? analysis_json.future_directions : [analysis_json.future_directions]}
-                    bgColor="bg-purple-50"
-                  />
-                )}
-              </div>
+              {/* 未来方向 */}
+              {analysis_json.future_directions && (
+                <div>
+                  <h3 className="text-sm font-bold text-gray-500 mb-2">
+                    未来方向
+                  </h3>
+                  <ul className="list-disc list-inside text-sm text-gray-700 space-y-1">
+                    {(Array.isArray(analysis_json.future_directions)
+                      ? analysis_json.future_directions
+                      : [analysis_json.future_directions]
+                    ).map((item, i) => (
+                      <li key={i}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           </div>
         )}
-      </main>
+      </div>
     </div>
   )
 }
 
-// 评估卡片组件
-function EvalCard({ icon, title, items, bgColor }) {
+// 大纲树形组件
+function OutlineTree({ outline }) {
+  if (!outline) return null
+
+  const items = Array.isArray(outline) ? outline : [outline]
+
   return (
-    <div className={`${bgColor} rounded-xl p-4`}>
-      <div className="flex items-center gap-2 mb-3">
-        {icon}
-        <h3 className="font-semibold text-gray-800">{title}</h3>
-      </div>
-      <ul className="space-y-2">
-        {items.map((item, idx) => (
-          <li key={idx} className="text-sm text-gray-700 leading-relaxed flex items-start gap-2">
-            <span className="text-gray-400 mt-1">•</span>
-            <span>{item}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
+    <ul className="space-y-2">
+      {items.map((item, i) => (
+        <OutlineItem key={i} item={item} depth={0} />
+      ))}
+    </ul>
+  )
+}
+
+function OutlineItem({ item, depth }) {
+  if (typeof item === 'string') {
+    return (
+      <li
+        className="text-sm text-gray-700"
+        style={{ paddingLeft: depth * 16 }}
+      >
+        • {item}
+      </li>
+    )
+  }
+
+  const { title, children } = item
+
+  return (
+    <li style={{ paddingLeft: depth * 16 }}>
+      <span className="text-sm font-medium text-gray-800">{title}</span>
+      {children && children.length > 0 && (
+        <ul className="mt-1 space-y-1">
+          {children.map((child, i) => (
+            <OutlineItem key={i} item={child} depth={depth + 1} />
+          ))}
+        </ul>
+      )}
+    </li>
   )
 }
