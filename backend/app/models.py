@@ -62,6 +62,32 @@ class Paper(DeclarativeBase):
     analysis_report: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     analysis_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
+    # === 新增字段 ===
+    # 内容类型
+    content_type: Mapped[str] = mapped_column(
+        String(20), default="paper", nullable=False
+    )  # paper, video, article, report
+
+    # 质量等级
+    tier: Mapped[Optional[str]] = mapped_column(
+        String(1), nullable=True
+    )  # A, B, C
+
+    # 行动建议（Obsidian 格式）
+    action_items: Mapped[Optional[List[str]]] = mapped_column(
+        JSON, nullable=True
+    )
+
+    # 知识关联（双向链接）
+    knowledge_links: Mapped[Optional[List[str]]] = mapped_column(
+        JSON, nullable=True
+    )
+
+    # Markdown 输出路径
+    md_output_path: Mapped[Optional[str]] = mapped_column(
+        String(500), nullable=True
+    )
+
     # 元数据
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False

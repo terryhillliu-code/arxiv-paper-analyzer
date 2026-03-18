@@ -29,6 +29,12 @@ class PaperBase(BaseModel):
     pdf_url: Optional[str] = None
     arxiv_url: Optional[str] = None
 
+    # 新增字段
+    content_type: str = "paper"
+    tier: Optional[str] = None
+    action_items: Optional[List[str]] = None
+    knowledge_links: Optional[List[str]] = None
+
 
 class PaperCard(PaperBase):
     """列表页卡片数据。
@@ -55,6 +61,10 @@ class PaperDetail(PaperCard):
     analysis_report: Optional[str] = None
     analysis_json: Optional[Dict[str, Any]] = None
     updated_at: Optional[datetime] = None
+
+    # 新增：Markdown 输出
+    md_output: Optional[str] = None  # 完整的 Markdown 内容
+    md_output_path: Optional[str] = None  # 保存路径
 
 
 class PaperListResponse(BaseModel):

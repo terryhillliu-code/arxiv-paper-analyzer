@@ -7,7 +7,9 @@
 
 import json
 import logging
+import os
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
@@ -213,9 +215,23 @@ class AIService:
             # 提取结构化数据
             analysis_json = await self._extract_analysis_json(report)
 
+            # === 新增：生成 Markdown 输出 ===
+            md_output = self._generate_markdown_output(
+                title=title,
+                authors=authors,
+                institutions=institutions,
+                publish_date=publish_date,
+                categories=categories,
+                arxiv_url=arxiv_url,
+                pdf_url=pdf_url,
+                report=report,
+                analysis_json=analysis_json,
+            )
+
             return {
                 "report": report,
                 "analysis_json": analysis_json,
+                "md_output": md_output,  # 新增
             }
 
         except Exception as e:
@@ -248,6 +264,111 @@ class AIService:
         except Exception as e:
             logger.error(f"提取结构化数据失败: {e}", exc_info=True)
             return {}
+
+    def _generate_markdown_output(
+        self,
+        title: str,
+        authors: List[str],
+        institutions: List[str],
+        publish_date: str,
+        categories: List[str],
+        arxiv_url: str,
+        pdf_url: str,
+        report: str,
+        analysis_json: Dict[str, Any],
+    ) -> str:
+        """生成 Obsidian 格式的 Markdown 输出。
+
+        Args:
+            各参数来自分析结果
+
+        Returns:
+            完整的 Markdown 内容
+        """
+        # 提取字段
+        one_line_summary = analysis_json.get("one_line_summary", "")
+        key_contributions = analysis_json.get("key_contributions", [])
+        strengths = analysis_json.get("strengths", [])
+        weaknesses = analysis_json.get("weaknesses", [])
+        future_directions = analysis_json.get("future_directions", [])
+        action_items = analysis_json.get("action_items", [])
+        knowledge_links = analysis_json.get("knowledge_links", [])
+        tier = analysis_json.get("tier", "B")
+        tags = analysis_json.get("tags", [])
+        outline = analysis_json.get("outline", [])
+
+        # 构建 YAML 元数据
+        yaml_front = f"""---
+title: "{title}"
+source_url: "{arxiv_url}"
+date: {publish_date or "未知"}
+type: paper
+
+tags: {tags}
+tier: {tier}
+methodology: "{analysis_json.get('methodology', '')}"
+
+related: {knowledge_links}
+institutions: {institutions}
+
+overall_rating: {analysis_json.get("overall_rating", "B")}
+---
+"""
+        # 构建正文
+        content = f"""# {title}
+
+> **内容等级**：{"⭐⭐⭐ 深度干货" if tier == "A" else "⭐⭐ 实用向导" if tier == "B" else "⭐ 一般参考"} | **综合评级**：{analysis_json.get("overall_rating", "B")}
+
+## 📋 基础信息
+
+| 项目 | 内容 |
+|------|------|
+| 作者 | {", ".join(authors) if authors else "未知"} |
+| 机构 | {", ".join(institutions) if institutions else "未知"} |
+| 发布日期 | {publish_date or "未知"} |
+| 来源 | [{arxiv_url}]({arxiv_url}) |
+
+## 💡 一句话总结
+
+{one_line_summary}
+
+## 📑 论文大纲
+
+{self._render_outline(outline)}
+
+{report}
+
+## ✅ 行动建议
+
+{self._render_action_items(action_items)}
+
+## 🔗 知识关联
+
+{" · ".join([f"[[{link.strip('[]')}]]" for link in knowledge_links]) if knowledge_links else "待补充"}
+
+## 📚 参考资料
+
+- [{title}]({arxiv_url})
+"""
+        return yaml_front + "\n" + content
+
+    def _render_outline(self, outline: List[Dict]) -> str:
+        """渲染大纲为 Markdown 列表。"""
+        if not outline:
+            return "待补充"
+
+        lines = []
+        for item in outline:
+            lines.append(f"- {item.get('title', '')}")
+            for child in item.get('children', []):
+                lines.append(f"  - {child.get('title', '')}")
+        return "\n".join(lines)
+
+    def _render_action_items(self, items: List[str]) -> str:
+        """渲染行动建议为 checkbox 列表。"""
+        if not items:
+            return "- [ ] 待补充"
+        return "\n".join([f"- [ ] {item}" for item in items])
 
     @staticmethod
     def _parse_json(text: str) -> Dict[str, Any]:

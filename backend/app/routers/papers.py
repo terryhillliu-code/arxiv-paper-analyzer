@@ -7,12 +7,14 @@ from datetime import datetime, timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import PlainTextResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database import get_db
 from app.models import FetchLog, Paper
+from app.outputs.markdown_generator import MarkdownGenerator
 from app.schemas import (
     AnalysisRequest,
     AnalysisResponse,
@@ -379,8 +381,18 @@ async def analyze_paper(
 
         # 更新论文分析结果
         paper.analysis_report = analysis_result.get("report", "")
-        paper.analysis_json = analysis_result.get("analysis_json", {})
+        analysis_json = analysis_result.get("analysis_json", {})
+        paper.analysis_json = analysis_json
         paper.has_analysis = True
+
+        # 保存新增字段
+        if analysis_json:
+            paper.tier = analysis_json.get("tier")
+            paper.action_items = analysis_json.get("action_items")
+            paper.knowledge_links = analysis_json.get("knowledge_links")
+            # 更新标签（如果有新的）
+            if analysis_json.get("tags"):
+                paper.tags = analysis_json.get("tags")
 
         await db.commit()
 
@@ -495,3 +507,83 @@ async def get_categories() -> dict:
     }
 
     return {"categories": categories_info}
+
+
+# ==================== Markdown 导出 ====================
+
+
+@router.get("/papers/{paper_id}/markdown", response_class=PlainTextResponse)
+async def export_paper_markdown(
+    paper_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """导出论文的 Markdown 格式。
+
+    直接输出可用于 Obsidian 的 Markdown 内容。
+    """
+    result = await db.execute(select(Paper).where(Paper.id == paper_id))
+    paper = result.scalar_one_or_none()
+
+    if not paper:
+        raise HTTPException(status_code=404, detail="论文不存在")
+
+    if not paper.has_analysis:
+        raise HTTPException(status_code=400, detail="论文尚未分析")
+
+    # 生成 Markdown
+    generator = MarkdownGenerator()
+    md_content = generator._build_paper_content(
+        {
+            "title": paper.title,
+            "authors": paper.authors,
+            "institutions": paper.institutions,
+            "publish_date": paper.publish_date,
+            "arxiv_url": paper.arxiv_url,
+            "tags": paper.tags,
+        },
+        paper.analysis_json or {},
+        paper.analysis_report or "",
+    )
+
+    return md_content
+
+
+@router.post("/papers/{paper_id}/export-to-obsidian")
+async def export_to_obsidian(
+    paper_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """将论文 Markdown 导出到 Obsidian Vault。"""
+    result = await db.execute(select(Paper).where(Paper.id == paper_id))
+    paper = result.scalar_one_or_none()
+
+    if not paper:
+        raise HTTPException(status_code=404, detail="论文不存在")
+
+    if not paper.has_analysis:
+        raise HTTPException(status_code=400, detail="论文尚未分析")
+
+    # 生成并保存 Markdown
+    generator = MarkdownGenerator()
+    filepath = generator.generate_paper_md(
+        {
+            "title": paper.title,
+            "authors": paper.authors,
+            "institutions": paper.institutions,
+            "publish_date": paper.publish_date,
+            "arxiv_url": paper.arxiv_url,
+            "tags": paper.tags,
+        },
+        paper.analysis_json or {},
+        paper.analysis_report or "",
+    )
+
+    # 更新数据库
+    paper.md_output_path = filepath
+    await db.commit()
+
+    return {
+        "message": "导出成功",
+        "filepath": filepath,
+        "paper_id": paper_id,
+    }

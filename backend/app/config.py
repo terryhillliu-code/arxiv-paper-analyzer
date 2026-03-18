@@ -6,6 +6,7 @@
 from functools import lru_cache
 from typing import List
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -63,6 +64,16 @@ class Settings(BaseSettings):
         "计算机存储故障诊断",
         "安全与隐私",
     ]
+
+    # Obsidian 配置
+    obsidian_vault_path: str = Field(
+        default="~/Documents/ZhiweiVault",
+        description="Obsidian Vault 根目录"
+    )
+    obsidian_inbox_path: str = Field(
+        default="Inbox",
+        description="Markdown 输出的 Inbox 子目录"
+    )
 
 
 @lru_cache
