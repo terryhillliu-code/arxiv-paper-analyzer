@@ -1,43 +1,54 @@
 """Markdown 输出生成器。
 
 生成符合 Obsidian 格式的 Markdown 文件。
+支持同时复制 PDF 到 Obsidian Vault。
 """
 
 import os
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class MarkdownGenerator:
     """Markdown 文件生成器。"""
 
-    def __init__(self, output_dir: str = None):
+    def __init__(self, output_dir: str = None, attachments_dir: str = None):
         """初始化生成器。
 
         Args:
-            output_dir: 输出目录，默认为 Obsidian Vault 的 Inbox
+            output_dir: Markdown 输出目录，默认为 Obsidian Vault 的 Inbox
+            attachments_dir: PDF 附件目录，默认为 Obsidian Vault 的 attachments
         """
-        self.output_dir = Path(output_dir or os.path.expanduser(
-            "~/Documents/ZhiweiVault/Inbox"
-        ))
+        self.vault_path = Path(os.path.expanduser("~/Documents/ZhiweiVault"))
+        self.output_dir = Path(output_dir or self.vault_path / "Inbox")
+        self.attachments_dir = Path(attachments_dir or self.vault_path / "attachments")
+
+        # 确保目录存在
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.attachments_dir.mkdir(parents=True, exist_ok=True)
 
     def generate_paper_md(
         self,
         paper_data: Dict[str, Any],
         analysis_json: Dict[str, Any],
         report: str,
-    ) -> str:
-        """生成论文 Markdown 文件。
+        pdf_path: str = None,
+    ) -> Dict[str, str]:
+        """生成论文 Markdown 文件并复制 PDF。
 
         Args:
             paper_data: 论文基础信息
             analysis_json: 分析结果 JSON
             report: 分析报告
+            pdf_path: PDF 源文件路径（可选）
 
         Returns:
-            生成的文件路径
+            包含 md_path 和 pdf_path 的字典
         """
         # 提取字段
         title = paper_data.get("title", "未知标题")
@@ -46,32 +57,53 @@ class MarkdownGenerator:
         # 生成文件名
         date_str = datetime.now().strftime("%Y-%m-%d")
         safe_title = self._sanitize_filename(title)
-        filename = f"{date_str}_{safe_title}.md"
-        filepath = self.output_dir / filename
 
-        # 生成内容
+        # Markdown 文件
+        md_filename = f"{date_str}_{safe_title}.md"
+        md_filepath = self.output_dir / md_filename
+
+        # 生成 Markdown 内容（包含 PDF 链接）
         content = self._build_paper_content(
-            paper_data, analysis_json, report
+            paper_data, analysis_json, report, pdf_filename=None
         )
 
-        # 写入文件
-        with open(filepath, "w", encoding="utf-8") as f:
+        # 复制 PDF 并更新链接
+        result = {"md_path": str(md_filepath), "pdf_path": None}
+        if pdf_path and os.path.exists(pdf_path):
+            pdf_filename = f"{date_str}_{safe_title}.pdf"
+            pdf_dest = self.attachments_dir / pdf_filename
+            try:
+                shutil.copy2(pdf_path, pdf_dest)
+                result["pdf_path"] = str(pdf_dest)
+                logger.info(f"PDF 复制成功: {pdf_dest}")
+
+                # 更新 Markdown 中的 PDF 链接
+                content = self._build_paper_content(
+                    paper_data, analysis_json, report, pdf_filename=pdf_filename
+                )
+            except Exception as e:
+                logger.warning(f"PDF 复制失败: {e}")
+
+        # 写入 Markdown 文件
+        with open(md_filepath, "w", encoding="utf-8") as f:
             f.write(content)
 
-        return str(filepath)
+        logger.info(f"Markdown 生成成功: {md_filepath}")
+        return result
 
     def _build_paper_content(
         self,
         paper_data: Dict[str, Any],
         analysis_json: Dict[str, Any],
         report: str,
+        pdf_filename: str = None,
     ) -> str:
         """构建 Markdown 内容。"""
         # YAML 元数据
         yaml = self._build_yaml(paper_data, analysis_json)
 
         # 正文
-        body = self._build_body(paper_data, analysis_json, report)
+        body = self._build_body(paper_data, analysis_json, report, pdf_filename)
 
         return yaml + "\n" + body
 
@@ -103,6 +135,7 @@ overall_rating: {analysis_json.get('overall_rating', 'B')}
         paper_data: Dict[str, Any],
         analysis_json: Dict[str, Any],
         report: str,
+        pdf_filename: str = None,
     ) -> str:
         """构建正文内容。"""
         title = paper_data.get("title", "")
@@ -114,6 +147,15 @@ overall_rating: {analysis_json.get('overall_rating', 'B')}
         # 安全格式化列表字段
         authors = self._safe_join(paper_data.get('authors', []))
         institutions = self._safe_join(paper_data.get('institutions', []))
+
+        # PDF 链接部分
+        pdf_section = ""
+        if pdf_filename:
+            pdf_section = f"""
+## 📄 PDF 附件
+
+- [[attachments/{pdf_filename}|打开 PDF]]
+"""
 
         return f"""# {title}
 
@@ -133,7 +175,7 @@ overall_rating: {analysis_json.get('overall_rating', 'B')}
 {analysis_json.get('one_line_summary', '待补充')}
 
 {report}
-
+{pdf_section}
 ## ✅ 行动建议
 
 {self._format_action_items(analysis_json.get('action_items', []))}
