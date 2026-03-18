@@ -3,6 +3,7 @@
 提供论文查询、抓取、分析等 API 端点。
 """
 
+import logging
 from datetime import datetime, timedelta
 from typing import List, Optional
 
@@ -15,6 +16,8 @@ from app.config import get_settings
 from app.database import get_db
 from app.models import FetchLog, Paper
 from app.outputs.markdown_generator import MarkdownGenerator
+
+logger = logging.getLogger(__name__)
 from app.schemas import (
     AnalysisRequest,
     AnalysisResponse,
@@ -394,13 +397,45 @@ async def analyze_paper(
             if analysis_json.get("tags"):
                 paper.tags = analysis_json.get("tags")
 
+        # === 自动导出到 Obsidian ===
+        export_result = None
+        try:
+            generator = MarkdownGenerator()
+            export_result = generator.generate_paper_md(
+                paper_data={
+                    "title": paper.title,
+                    "authors": paper.authors,
+                    "institutions": paper.institutions,
+                    "publish_date": paper.publish_date,
+                    "arxiv_url": paper.arxiv_url,
+                    "arxiv_id": paper.arxiv_id,
+                    "tags": paper.tags,
+                },
+                analysis_json=analysis_json or {},
+                report=paper.analysis_report or "",
+                pdf_path=paper.pdf_local_path,  # 传递本地 PDF 路径
+            )
+            # 保存导出路径
+            paper.md_output_path = export_result.get("md_path")
+            logger.info(f"自动导出到 Obsidian 成功: {export_result}")
+        except Exception as e:
+            logger.warning(f"自动导出到 Obsidian 失败: {e}")
+            # 导出失败不影响分析结果保存
+
         await db.commit()
+
+        # 构建返回消息
+        message = "分析完成"
+        if export_result:
+            message += f"，已导出到 Obsidian"
+            if export_result.get("pdf_path"):
+                message += "（含 PDF）"
 
         return AnalysisResponse(
             paper_id=paper_id,
             status="completed",
             report=paper.analysis_report,
-            message="分析完成",
+            message=message,
         )
 
     except HTTPException:
