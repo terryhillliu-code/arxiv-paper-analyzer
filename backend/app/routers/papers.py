@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 from app.schemas import (
     AnalysisRequest,
     AnalysisResponse,
+    BatchAnalyzeResponse,
+    DailyTrendingPapers,
+    DailyTrendingResponse,
     FetchByCategoriesRequest,
     FetchByDateRequest,
     FetchRequest,
@@ -30,6 +33,8 @@ from app.schemas import (
     PaperFilter,
     PaperListResponse,
     StatsResponse,
+    TrendingPaperCard,
+    TrendingPapersResponse,
 )
 from app.services.ai_service import ai_service
 from app.services.arxiv_service import ArxivService
@@ -137,6 +142,752 @@ async def get_papers(
     )
 
 
+# ==================== 热门度排名（必须在 /papers/{paper_id} 之前）====================
+
+
+def calculate_popularity_score(
+    view_count: int,
+    has_analysis: bool,
+    has_summary: bool,
+    days_since_publish: int,
+    is_featured: bool = False,
+) -> tuple[float, dict]:
+    """计算论文热门度分数。
+
+    热门度 = 浏览量权重 + 分析权重 + 摘要权重 + 时效性权重 + 精选加成
+
+    Args:
+        view_count: 浏览量
+        has_analysis: 是否有深度分析
+        has_summary: 是否有AI摘要
+        days_since_publish: 发布距今天数
+        is_featured: 是否精选
+
+    Returns:
+        (总分, 各项分数字典)
+    """
+    # 浏览量分数：对数增长，每10次浏览约增加1分
+    view_score = min(10.0, (view_count / 10) ** 0.5 * 2) if view_count > 0 else 0
+
+    # 分析分数：有深度分析 +5分
+    analysis_score = 5.0 if has_analysis else 0
+
+    # 摘要分数：有AI摘要 +3分
+    summary_score = 3.0 if has_summary else 0
+
+    # 时效性分数：7天内发布 +5分，14天内 +3分，30天内 +1分
+    if days_since_publish <= 7:
+        recency_score = 5.0
+    elif days_since_publish <= 14:
+        recency_score = 3.0
+    elif days_since_publish <= 30:
+        recency_score = 1.0
+    else:
+        recency_score = 0.0
+
+    # 精选加成：+2分
+    featured_score = 2.0 if is_featured else 0
+
+    total = view_score + analysis_score + summary_score + recency_score + featured_score
+
+    components = {
+        "view_score": round(view_score, 2),
+        "analysis_score": analysis_score,
+        "summary_score": summary_score,
+        "recency_score": recency_score,
+        "featured_score": featured_score,
+    }
+
+    return round(total, 2), components
+
+
+async def update_popularity_scores(db: AsyncSession) -> int:
+    """更新所有论文的热门度分数。
+
+    Returns:
+        更新的论文数量
+    """
+    from datetime import timezone
+
+    result = await db.execute(select(Paper))
+    papers = result.scalars().all()
+
+    now = datetime.now(timezone.utc)
+    updated_count = 0
+
+    for paper in papers:
+        # 计算发布距今天数
+        if paper.publish_date:
+            if paper.publish_date.tzinfo is None:
+                pub_date = paper.publish_date.replace(tzinfo=timezone.utc)
+            else:
+                pub_date = paper.publish_date
+            days_since = (now - pub_date).days
+        else:
+            days_since = 999  # 无发布日期视为很旧
+
+        # 计算热门度
+        score, _ = calculate_popularity_score(
+            view_count=paper.view_count,
+            has_analysis=paper.has_analysis,
+            has_summary=bool(paper.summary),
+            days_since_publish=days_since,
+            is_featured=paper.is_featured,
+        )
+
+        paper.popularity_score = score
+        updated_count += 1
+
+    await db.commit()
+    return updated_count
+
+
+@router.get("/papers/trending", response_model=TrendingPapersResponse)
+async def get_trending_papers(
+    limit: int = Query(20, ge=1, le=50, description="返回数量"),
+    update_scores: bool = Query(False, description="是否更新热门度分数"),
+    db: AsyncSession = Depends(get_db),
+) -> TrendingPapersResponse:
+    """获取热门论文列表。
+
+    按热门度排名返回论文，默认前20篇。
+    热门度综合考虑浏览量、分析状态、时效性等因素。
+    """
+    # 可选：更新热门度分数
+    if update_scores:
+        await update_popularity_scores(db)
+
+    # 查询热门论文
+    query = (
+        select(Paper)
+        .order_by(Paper.popularity_score.desc())
+        .limit(limit)
+    )
+    result = await db.execute(query)
+    papers = result.scalars().all()
+
+    # 统计已分析论文数
+    analyzed_query = select(func.count()).select_from(Paper).where(
+        Paper.has_analysis == True
+    )
+    analyzed_result = await db.execute(analyzed_query)
+    total_analyzed = analyzed_result.scalar() or 0
+
+    # 构建响应
+    trending_papers = []
+    for rank, paper in enumerate(papers, start=1):
+        card = TrendingPaperCard(
+            id=paper.id,
+            arxiv_id=paper.arxiv_id,
+            title=paper.title,
+            authors=paper.authors,
+            institutions=paper.institutions,
+            categories=paper.categories,
+            tags=paper.tags,
+            summary=paper.summary,
+            publish_date=paper.publish_date,
+            pdf_url=paper.pdf_url,
+            arxiv_url=paper.arxiv_url,
+            content_type=paper.content_type,
+            tier=paper.tier,
+            action_items=paper.action_items,
+            knowledge_links=paper.knowledge_links,
+            has_analysis=paper.has_analysis,
+            view_count=paper.view_count,
+            popularity_score=paper.popularity_score,
+            created_at=paper.created_at,
+            rank=rank,
+            popularity_components=None,  # 可扩展：返回详细分数
+        )
+        trending_papers.append(card)
+
+    return TrendingPapersResponse(
+        papers=trending_papers,
+        date=datetime.now().strftime("%Y-%m-%d"),
+        total_analyzed=total_analyzed,
+    )
+
+
+@router.post("/papers/trending/analyze", response_model=BatchAnalyzeResponse)
+async def analyze_trending_papers(
+    limit: int = Query(20, ge=1, le=50, description="分析数量"),
+    force_refresh: bool = Query(False, description="是否强制重新分析"),
+    use_mineru: bool = Query(True, description="是否使用 MinerU 深度解析"),
+    db: AsyncSession = Depends(get_db),
+) -> BatchAnalyzeResponse:
+    """批量分析热门论文。
+
+    对热门度排名前N的论文进行深度分析。
+    默认分析前20篇。
+    """
+    # 查询热门论文
+    query = (
+        select(Paper)
+        .order_by(Paper.popularity_score.desc())
+        .limit(limit)
+    )
+    result = await db.execute(query)
+    papers = result.scalars().all()
+
+    success_count = 0
+    failed_count = 0
+    results = []
+
+    for paper in papers:
+        try:
+            # 如果已有分析且不强制刷新，跳过
+            if paper.has_analysis and paper.analysis_report and not force_refresh:
+                results.append({
+                    "paper_id": paper.id,
+                    "title": paper.title,
+                    "status": "skipped",
+                    "message": "已有分析",
+                })
+                continue
+
+            # 下载并解析 PDF
+            content = paper.full_text
+            if not content and paper.pdf_url and paper.arxiv_id:
+                pdf_path = await pdf_service.download_pdf(
+                    pdf_url=paper.pdf_url,
+                    arxiv_id=paper.arxiv_id,
+                )
+                paper.pdf_local_path = pdf_path
+
+                if use_mineru:
+                    content, _ = await pdf_service.extract_markdown(pdf_path)
+                else:
+                    content = await PDFService.get_paper_text(
+                        pdf_url=paper.pdf_url,
+                        arxiv_id=paper.arxiv_id,
+                    )
+
+                if content:
+                    paper.full_text = content
+
+            # 如果内容不足，使用摘要
+            if not content or len(content) < 500:
+                content = paper.abstract or ""
+
+            if not content:
+                results.append({
+                    "paper_id": paper.id,
+                    "title": paper.title,
+                    "status": "failed",
+                    "message": "无内容可分析",
+                })
+                failed_count += 1
+                continue
+
+            # 生成深度分析
+            analysis_result = await ai_service.generate_deep_analysis(
+                title=paper.title,
+                authors=paper.authors or [],
+                institutions=paper.institutions or [],
+                publish_date=str(paper.publish_date) if paper.publish_date else "",
+                categories=paper.categories or [],
+                arxiv_url=paper.arxiv_url or "",
+                pdf_url=paper.pdf_url or "",
+                content=content,
+            )
+
+            # 更新论文
+            paper.analysis_report = analysis_result.get("report", "")
+            analysis_json = analysis_result.get("analysis_json", {})
+            paper.analysis_json = analysis_json
+            paper.has_analysis = True
+
+            if analysis_json:
+                paper.tier = analysis_json.get("tier")
+                paper.action_items = analysis_json.get("action_items")
+                paper.knowledge_links = analysis_json.get("knowledge_links")
+                if analysis_json.get("tags"):
+                    paper.tags = analysis_json.get("tags")
+
+            # 导出到 Obsidian
+            try:
+                generator = MarkdownGenerator()
+                export_result = generator.generate_paper_md(
+                    paper_data={
+                        "title": paper.title,
+                        "authors": paper.authors,
+                        "institutions": paper.institutions,
+                        "publish_date": paper.publish_date,
+                        "arxiv_url": paper.arxiv_url,
+                        "arxiv_id": paper.arxiv_id,
+                        "tags": paper.tags,
+                    },
+                    analysis_json=analysis_json or {},
+                    report=paper.analysis_report or "",
+                    pdf_path=paper.pdf_local_path,
+                )
+                paper.md_output_path = export_result.get("md_path")
+            except Exception as e:
+                logger.warning(f"导出到 Obsidian 失败: {e}")
+
+            success_count += 1
+            results.append({
+                "paper_id": paper.id,
+                "title": paper.title,
+                "status": "success",
+                "message": "分析完成",
+            })
+
+        except Exception as e:
+            failed_count += 1
+            results.append({
+                "paper_id": paper.id,
+                "title": paper.title,
+                "status": "failed",
+                "message": str(e)[:100],
+            })
+
+    await db.commit()
+
+    # 更新热门度分数
+    await update_popularity_scores(db)
+
+    return BatchAnalyzeResponse(
+        total=len(papers),
+        success=success_count,
+        failed=failed_count,
+        papers=results,
+        message=f"批量分析完成: 成功 {success_count}，失败 {failed_count}，跳过 {len(papers) - success_count - failed_count}",
+    )
+
+
+# ==================== 每日热门论文 ====================
+
+
+@router.get("/papers/trending/daily", response_model=DailyTrendingResponse)
+async def get_daily_trending_papers(
+    days: int = Query(7, ge=1, le=30, description="返回最近几天的数据"),
+    limit_per_day: int = Query(20, ge=1, le=50, description="每天返回数量"),
+    update_scores: bool = Query(False, description="是否更新热门度分数"),
+    db: AsyncSession = Depends(get_db),
+) -> DailyTrendingResponse:
+    """获取每日热门论文。
+
+    按日期分组，每天返回热门度 Top N 的论文。
+
+    Args:
+        days: 返回最近几天的数据（默认7天）
+        limit_per_day: 每天返回的论文数量（默认20篇）
+        update_scores: 是否更新热门度分数
+        db: 数据库会话
+
+    Returns:
+        DailyTrendingResponse: 按日期分组的热门论文列表
+    """
+    # 可选：更新热门度分数
+    if update_scores:
+        await update_popularity_scores(db)
+
+    # 计算日期范围
+    end_date = datetime.now().date()
+    start_date = end_date - timedelta(days=days - 1)
+
+    # 查询时间范围内的所有论文，按日期和热门度排序
+    query = (
+        select(Paper)
+        .where(Paper.publish_date >= start_date)
+        .where(Paper.publish_date <= end_date)
+        .order_by(Paper.publish_date.desc(), Paper.popularity_score.desc())
+    )
+    result = await db.execute(query)
+    papers = result.scalars().all()
+
+    # 按日期分组
+    papers_by_date = {}
+    for paper in papers:
+        if paper.publish_date:
+            date_str = paper.publish_date.strftime("%Y-%m-%d")
+            if date_str not in papers_by_date:
+                papers_by_date[date_str] = []
+            if len(papers_by_date[date_str]) < limit_per_day:
+                papers_by_date[date_str].append(paper)
+
+    # 统计每天的论文总数（按日期部分分组）
+    count_query = (
+        select(
+            func.strftime("%Y-%m-%d", Paper.publish_date).label("date"),
+            func.count(Paper.id).label("count")
+        )
+        .where(Paper.publish_date >= start_date)
+        .where(Paper.publish_date <= end_date)
+        .group_by(func.strftime("%Y-%m-%d", Paper.publish_date))
+        .order_by(func.strftime("%Y-%m-%d", Paper.publish_date).desc())
+    )
+    count_result = await db.execute(count_query)
+    counts_by_date = {
+        row.date: row.count
+        for row in count_result.all()
+        if row.date
+    }
+
+    # 构建响应
+    daily_papers = []
+    total_papers = 0
+
+    for date_str in sorted(papers_by_date.keys(), reverse=True):
+        day_papers = papers_by_date[date_str]
+        trending_cards = []
+        for rank, paper in enumerate(day_papers, 1):
+            card = TrendingPaperCard(
+                id=paper.id,
+                arxiv_id=paper.arxiv_id,
+                title=paper.title,
+                authors=paper.authors,
+                institutions=paper.institutions,
+                categories=paper.categories,
+                tags=paper.tags,
+                summary=paper.summary,
+                publish_date=paper.publish_date,
+                pdf_url=paper.pdf_url,
+                arxiv_url=paper.arxiv_url,
+                content_type=paper.content_type,
+                tier=paper.tier,
+                action_items=paper.action_items,
+                knowledge_links=paper.knowledge_links,
+                has_analysis=paper.has_analysis,
+                view_count=paper.view_count,
+                popularity_score=paper.popularity_score,
+                created_at=paper.created_at,
+                rank=rank,
+            )
+            trending_cards.append(card)
+
+        daily_papers.append(
+            DailyTrendingPapers(
+                date=date_str,
+                papers=trending_cards,
+                total_that_day=counts_by_date.get(date_str, len(day_papers)),
+            )
+        )
+        total_papers += len(day_papers)
+
+    return DailyTrendingResponse(
+        days=daily_papers,
+        total_days=len(daily_papers),
+        total_papers=total_papers,
+    )
+
+
+@router.post("/papers/trending/daily/analyze", response_model=BatchAnalyzeResponse)
+async def analyze_daily_trending_papers(
+    days: int = Query(1, ge=1, le=7, description="分析最近几天的"),
+    limit_per_day: int = Query(20, ge=1, le=50, description="每天分析数量"),
+    force_refresh: bool = Query(False, description="是否强制重新分析"),
+    use_mineru: bool = Query(True, description="是否使用 MinerU 深度解析"),
+    db: AsyncSession = Depends(get_db),
+) -> BatchAnalyzeResponse:
+    """批量分析每日热门论文。
+
+    对指定天数内每天的热门论文进行深度分析。
+
+    Args:
+        days: 分析最近几天的数据（默认1天，即今天）
+        limit_per_day: 每天分析的论文数量（默认20篇）
+        force_refresh: 是否强制重新分析
+        use_mineru: 是否使用 MinerU 深度解析
+        db: 数据库会话
+
+    Returns:
+        BatchAnalyzeResponse: 批量分析结果
+    """
+    # 计算日期范围
+    end_date = datetime.now().date()
+    start_date = end_date - timedelta(days=days - 1)
+
+    # 查询时间范围内的所有论文，按日期和热门度排序
+    query = (
+        select(Paper)
+        .where(Paper.publish_date >= start_date)
+        .where(Paper.publish_date <= end_date)
+        .order_by(Paper.publish_date.desc(), Paper.popularity_score.desc())
+    )
+    result = await db.execute(query)
+    papers = result.scalars().all()
+
+    # 按日期分组，取每天 Top N
+    papers_by_date = {}
+    for paper in papers:
+        if paper.publish_date:
+            date_str = paper.publish_date.strftime("%Y-%m-%d")
+            if date_str not in papers_by_date:
+                papers_by_date[date_str] = []
+            if len(papers_by_date[date_str]) < limit_per_day:
+                papers_by_date[date_str].append(paper)
+
+    # 合并所有待分析的论文
+    papers_to_analyze = []
+    for date_str in sorted(papers_by_date.keys(), reverse=True):
+        papers_to_analyze.extend(papers_by_date[date_str])
+
+    success_count = 0
+    failed_count = 0
+    skipped_count = 0
+    results = []
+
+    for paper in papers_to_analyze:
+        try:
+            # 如果已有分析且不强制刷新，跳过
+            if paper.has_analysis and paper.analysis_report and not force_refresh:
+                results.append({
+                    "paper_id": paper.id,
+                    "title": paper.title,
+                    "status": "skipped",
+                    "message": "已有分析",
+                })
+                skipped_count += 1
+                continue
+
+            # 下载并解析 PDF
+            content = paper.full_text
+            if not content and paper.pdf_url and paper.arxiv_id:
+                pdf_path = await pdf_service.download_pdf(
+                    pdf_url=paper.pdf_url,
+                    arxiv_id=paper.arxiv_id,
+                )
+                paper.pdf_local_path = pdf_path
+
+                if use_mineru:
+                    content, _ = await pdf_service.extract_markdown(pdf_path)
+                else:
+                    content = await PDFService.get_paper_text(
+                        pdf_url=paper.pdf_url,
+                        arxiv_id=paper.arxiv_id,
+                    )
+
+                if content:
+                    paper.full_text = content
+
+            # 如果内容不足，使用摘要
+            if not content or len(content) < 500:
+                content = paper.abstract or ""
+
+            if not content:
+                results.append({
+                    "paper_id": paper.id,
+                    "title": paper.title,
+                    "status": "failed",
+                    "message": "无内容可分析",
+                })
+                failed_count += 1
+                continue
+
+            # 生成深度分析
+            analysis_result = await ai_service.generate_deep_analysis(
+                title=paper.title,
+                authors=paper.authors or [],
+                institutions=paper.institutions or [],
+                publish_date=str(paper.publish_date) if paper.publish_date else "",
+                categories=paper.categories or [],
+                arxiv_url=paper.arxiv_url or "",
+                pdf_url=paper.pdf_url or "",
+                content=content,
+            )
+
+            # 更新论文
+            paper.analysis_report = analysis_result.get("report", "")
+            analysis_json = analysis_result.get("analysis_json", {})
+            paper.analysis_json = analysis_json
+            paper.has_analysis = True
+
+            if analysis_json:
+                paper.tier = analysis_json.get("tier")
+                paper.action_items = analysis_json.get("action_items")
+                paper.knowledge_links = analysis_json.get("knowledge_links")
+                if analysis_json.get("tags"):
+                    paper.tags = analysis_json.get("tags")
+
+            # 导出到 Obsidian
+            try:
+                generator = MarkdownGenerator()
+                export_result = generator.generate_paper_md(
+                    paper_data={
+                        "title": paper.title,
+                        "authors": paper.authors,
+                        "institutions": paper.institutions,
+                        "publish_date": paper.publish_date,
+                        "arxiv_url": paper.arxiv_url,
+                        "arxiv_id": paper.arxiv_id,
+                        "tags": paper.tags,
+                    },
+                    analysis_json=analysis_json or {},
+                    report=paper.analysis_report or "",
+                    pdf_path=paper.pdf_local_path,
+                )
+                paper.md_output_path = export_result.get("md_path")
+            except Exception as e:
+                logger.warning(f"导出到 Obsidian 失败: {e}")
+
+            success_count += 1
+            results.append({
+                "paper_id": paper.id,
+                "title": paper.title,
+                "status": "success",
+                "message": "分析完成",
+            })
+
+        except Exception as e:
+            failed_count += 1
+            results.append({
+                "paper_id": paper.id,
+                "title": paper.title,
+                "status": "failed",
+                "message": str(e)[:100],
+            })
+
+    await db.commit()
+
+    # 更新热门度分数
+    await update_popularity_scores(db)
+
+    return BatchAnalyzeResponse(
+        total=len(papers_to_analyze),
+        success=success_count,
+        failed=failed_count,
+        papers=results,
+        message=f"批量分析完成: 成功 {success_count}，失败 {failed_count}，跳过 {skipped_count}",
+    )
+
+
+@router.get("/papers/missing-summary")
+async def get_papers_missing_summary(
+    limit: int = Query(100, ge=1, le=500, description="返回数量限制"),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """获取缺少AI摘要的论文列表。
+
+    返回 summary 为空的论文，用于批量生成摘要。
+    """
+    # 查询 summary 为空的论文
+    query = (
+        select(Paper)
+        .where(or_(Paper.summary == None, Paper.summary == ""))
+        .order_by(Paper.popularity_score.desc())
+        .limit(limit)
+    )
+    result = await db.execute(query)
+    papers = result.scalars().all()
+
+    # 统计总数
+    count_query = select(func.count()).select_from(Paper).where(
+        or_(Paper.summary == None, Paper.summary == "")
+    )
+    count_result = await db.execute(count_query)
+    total_missing = count_result.scalar() or 0
+
+    return {
+        "papers": [
+            {
+                "id": p.id,
+                "arxiv_id": p.arxiv_id,
+                "title": p.title[:100] if p.title else "",
+                "has_abstract": bool(p.abstract),
+            }
+            for p in papers
+        ],
+        "total_missing": total_missing,
+        "returned": len(papers),
+    }
+
+
+@router.post("/papers/generate-summaries")
+async def generate_summaries(
+    limit: int = Query(10, ge=1, le=50, description="处理数量限制"),
+    process_all: bool = Query(False, description="是否处理所有缺少摘要的论文"),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """批量生成论文摘要。
+
+    为没有摘要的论文生成标签和一句话总结。
+
+    Args:
+        limit: 每次处理的最大数量（默认10篇）
+        process_all: 如果为True，处理所有缺少摘要的论文（最多100篇）
+    """
+    # 查询 summary 为空的论文
+    actual_limit = 100 if process_all else limit
+    query = (
+        select(Paper)
+        .where(or_(Paper.summary == None, Paper.summary == ""))
+        .order_by(Paper.popularity_score.desc())
+        .limit(actual_limit)
+    )
+    result = await db.execute(query)
+    papers = result.scalars().all()
+
+    if not papers:
+        return {
+            "processed": 0,
+            "success": 0,
+            "failed": 0,
+            "message": "没有需要处理的论文，所有论文都已有AI摘要",
+        }
+
+    success_count = 0
+    failed_count = 0
+    results = []
+
+    for paper in papers:
+        try:
+            # 调用 AI 生成摘要
+            summary_result = await ai_service.generate_summary(
+                title=paper.title,
+                authors=paper.authors or [],
+                abstract=paper.abstract or "",
+                categories=paper.categories or [],
+            )
+
+            # 更新论文信息
+            paper.summary = summary_result.get("summary", "")
+            paper.tags = summary_result.get("tags", [])
+            paper.institutions = summary_result.get("institutions", [])
+
+            success_count += 1
+            results.append({
+                "paper_id": paper.id,
+                "title": paper.title[:50],
+                "status": "success",
+            })
+
+        except Exception as e:
+            failed_count += 1
+            results.append({
+                "paper_id": paper.id,
+                "title": paper.title[:50],
+                "status": "failed",
+                "error": str(e)[:50],
+            })
+            continue
+
+    await db.commit()
+
+    # 更新热门度分数
+    await update_popularity_scores(db)
+
+    # 查询剩余未处理的数量
+    remaining_query = select(func.count()).select_from(Paper).where(
+        or_(Paper.summary == None, Paper.summary == "")
+    )
+    remaining_result = await db.execute(remaining_query)
+    remaining = remaining_result.scalar() or 0
+
+    return {
+        "processed": len(papers),
+        "success": success_count,
+        "failed": failed_count,
+        "remaining": remaining,
+        "results": results,
+        "message": f"处理完成: 成功 {success_count}，失败 {failed_count}，剩余 {remaining} 篇待处理",
+    }
+
+
+# ==================== 论文详情（必须在具体路径之后）====================
+
+
 @router.get("/papers/{paper_id}", response_model=PaperDetail)
 async def get_paper_detail(
     paper_id: int,
@@ -193,6 +944,7 @@ async def fetch_papers(
     """从 ArXiv 抓取论文。
 
     使用自定义查询语句抓取。
+    支持抓取后自动生成AI摘要。
     """
     result = await ArxivService.fetch_papers(
         db=db,
@@ -200,10 +952,42 @@ async def fetch_papers(
         max_results=request.max_results,
     )
 
+    # 自动生成AI摘要
+    summary_message = ""
+    if request.auto_summary and result["new_papers"] > 0:
+        # 查询新抓取的论文（summary为空）
+        new_papers_query = (
+            select(Paper)
+            .where(or_(Paper.summary == None, Paper.summary == ""))
+            .order_by(Paper.created_at.desc())
+            .limit(result["new_papers"])
+        )
+        new_papers_result = await db.execute(new_papers_query)
+        new_papers = new_papers_result.scalars().all()
+
+        summary_success = 0
+        for paper in new_papers:
+            try:
+                summary_result = await ai_service.generate_summary(
+                    title=paper.title,
+                    authors=paper.authors or [],
+                    abstract=paper.abstract or "",
+                    categories=paper.categories or [],
+                )
+                paper.summary = summary_result.get("summary", "")
+                paper.tags = summary_result.get("tags", [])
+                paper.institutions = summary_result.get("institutions", [])
+                summary_success += 1
+            except Exception as e:
+                logger.warning(f"生成摘要失败 {paper.arxiv_id}: {e}")
+
+        await db.commit()
+        summary_message = f"，已生成 {summary_success} 篇摘要"
+
     return FetchResponse(
         total_fetched=result["total_fetched"],
         new_papers=result["new_papers"],
-        message=result["message"],
+        message=result["message"] + summary_message,
     )
 
 
@@ -215,6 +999,7 @@ async def fetch_by_categories(
     """按分类抓取论文。
 
     从指定的 ArXiv 分类抓取最新论文。
+    支持抓取后自动生成AI摘要。
     """
     result = await ArxivService.fetch_by_categories(
         db=db,
@@ -222,10 +1007,41 @@ async def fetch_by_categories(
         max_results=request.max_results,
     )
 
+    # 自动生成AI摘要
+    summary_message = ""
+    if request.auto_summary and result["new_papers"] > 0:
+        new_papers_query = (
+            select(Paper)
+            .where(or_(Paper.summary == None, Paper.summary == ""))
+            .order_by(Paper.created_at.desc())
+            .limit(result["new_papers"])
+        )
+        new_papers_result = await db.execute(new_papers_query)
+        new_papers = new_papers_result.scalars().all()
+
+        summary_success = 0
+        for paper in new_papers:
+            try:
+                summary_result = await ai_service.generate_summary(
+                    title=paper.title,
+                    authors=paper.authors or [],
+                    abstract=paper.abstract or "",
+                    categories=paper.categories or [],
+                )
+                paper.summary = summary_result.get("summary", "")
+                paper.tags = summary_result.get("tags", [])
+                paper.institutions = summary_result.get("institutions", [])
+                summary_success += 1
+            except Exception as e:
+                logger.warning(f"生成摘要失败 {paper.arxiv_id}: {e}")
+
+        await db.commit()
+        summary_message = f"，已生成 {summary_success} 篇摘要"
+
     return FetchResponse(
         total_fetched=result["total_fetched"],
         new_papers=result["new_papers"],
-        message=result["message"],
+        message=result["message"] + summary_message,
     )
 
 
@@ -238,6 +1054,7 @@ async def fetch_by_date_range(
 
     抓取指定日期范围内发布的论文。
     注意：ArXiv API 不直接支持日期筛选，此接口通过抓取更多论文后过滤。
+    支持抓取后自动生成AI摘要。
     """
     result = await ArxivService.fetch_by_date_range(
         db=db,
@@ -247,30 +1064,109 @@ async def fetch_by_date_range(
         max_results=request.max_results,
     )
 
+    # 自动生成AI摘要
+    summary_message = ""
+    if request.auto_summary and result["new_papers"] > 0:
+        new_papers_query = (
+            select(Paper)
+            .where(or_(Paper.summary == None, Paper.summary == ""))
+            .order_by(Paper.created_at.desc())
+            .limit(result["new_papers"])
+        )
+        new_papers_result = await db.execute(new_papers_query)
+        new_papers = new_papers_result.scalars().all()
+
+        summary_success = 0
+        for paper in new_papers:
+            try:
+                summary_result = await ai_service.generate_summary(
+                    title=paper.title,
+                    authors=paper.authors or [],
+                    abstract=paper.abstract or "",
+                    categories=paper.categories or [],
+                )
+                paper.summary = summary_result.get("summary", "")
+                paper.tags = summary_result.get("tags", [])
+                paper.institutions = summary_result.get("institutions", [])
+                summary_success += 1
+            except Exception as e:
+                logger.warning(f"生成摘要失败 {paper.arxiv_id}: {e}")
+
+        await db.commit()
+        summary_message = f"，已生成 {summary_success} 篇摘要"
+
     return FetchResponse(
         total_fetched=result.get("filtered_papers", result["total_fetched"]),
         new_papers=result["new_papers"],
-        message=result["message"],
+        message=result["message"] + summary_message,
     )
 
 
 # ==================== 摘要生成 ====================
 
 
-@router.post("/papers/generate-summaries")
-async def generate_summaries(
-    limit: int = Query(10, ge=1, le=50, description="处理数量限制"),
+@router.get("/papers/missing-summary")
+async def get_papers_missing_summary(
+    limit: int = Query(100, ge=1, le=500, description="返回数量限制"),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """批量生成论文摘要。
+    """获取缺少AI摘要的论文列表。
 
-    为没有摘要的论文生成标签和一句话总结。
+    返回 summary 为空的论文，用于批量生成摘要。
     """
     # 查询 summary 为空的论文
     query = (
         select(Paper)
         .where(or_(Paper.summary == None, Paper.summary == ""))
+        .order_by(Paper.popularity_score.desc())
         .limit(limit)
+    )
+    result = await db.execute(query)
+    papers = result.scalars().all()
+
+    # 统计总数
+    count_query = select(func.count()).select_from(Paper).where(
+        or_(Paper.summary == None, Paper.summary == "")
+    )
+    count_result = await db.execute(count_query)
+    total_missing = count_result.scalar() or 0
+
+    return {
+        "papers": [
+            {
+                "id": p.id,
+                "arxiv_id": p.arxiv_id,
+                "title": p.title[:100] if p.title else "",
+                "has_abstract": bool(p.abstract),
+            }
+            for p in papers
+        ],
+        "total_missing": total_missing,
+        "returned": len(papers),
+    }
+
+
+@router.post("/papers/generate-summaries")
+async def generate_summaries(
+    limit: int = Query(10, ge=1, le=50, description="处理数量限制"),
+    process_all: bool = Query(False, description="是否处理所有缺少摘要的论文"),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """批量生成论文摘要。
+
+    为没有摘要的论文生成标签和一句话总结。
+
+    Args:
+        limit: 每次处理的最大数量（默认10篇）
+        process_all: 如果为True，处理所有缺少摘要的论文（最多100篇）
+    """
+    # 查询 summary 为空的论文
+    actual_limit = 100 if process_all else limit
+    query = (
+        select(Paper)
+        .where(or_(Paper.summary == None, Paper.summary == ""))
+        .order_by(Paper.popularity_score.desc())
+        .limit(actual_limit)
     )
     result = await db.execute(query)
     papers = result.scalars().all()
@@ -280,11 +1176,12 @@ async def generate_summaries(
             "processed": 0,
             "success": 0,
             "failed": 0,
-            "message": "没有需要处理的论文",
+            "message": "没有需要处理的论文，所有论文都已有AI摘要",
         }
 
     success_count = 0
     failed_count = 0
+    results = []
 
     for paper in papers:
         try:
@@ -302,18 +1199,41 @@ async def generate_summaries(
             paper.institutions = summary_result.get("institutions", [])
 
             success_count += 1
+            results.append({
+                "paper_id": paper.id,
+                "title": paper.title[:50],
+                "status": "success",
+            })
 
         except Exception as e:
             failed_count += 1
+            results.append({
+                "paper_id": paper.id,
+                "title": paper.title[:50],
+                "status": "failed",
+                "error": str(e)[:50],
+            })
             continue
 
     await db.commit()
+
+    # 更新热门度分数
+    await update_popularity_scores(db)
+
+    # 查询剩余未处理的数量
+    remaining_query = select(func.count()).select_from(Paper).where(
+        or_(Paper.summary == None, Paper.summary == "")
+    )
+    remaining_result = await db.execute(remaining_query)
+    remaining = remaining_result.scalar() or 0
 
     return {
         "processed": len(papers),
         "success": success_count,
         "failed": failed_count,
-        "message": f"处理完成: 成功 {success_count} 篇，失败 {failed_count} 篇",
+        "remaining": remaining,
+        "results": results,
+        "message": f"处理完成: 成功 {success_count}，失败 {failed_count}，剩余 {remaining} 篇待处理",
     }
 
 

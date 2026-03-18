@@ -45,6 +45,7 @@ class PaperCard(PaperBase):
     id: int
     has_analysis: bool = False
     view_count: int = 0
+    popularity_score: float = 0.0
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -111,6 +112,7 @@ class FetchRequest(BaseModel):
         description="arXiv 查询语句",
     )
     max_results: int = Field(default=50, ge=1, le=100, description="最大抓取数量")
+    auto_summary: bool = Field(default=True, description="是否自动生成AI摘要")
 
 
 class FetchByCategoriesRequest(BaseModel):
@@ -124,6 +126,7 @@ class FetchByCategoriesRequest(BaseModel):
         description="ArXiv 分类列表",
     )
     max_results: int = Field(default=50, ge=1, le=100, description="每个分类最大抓取数量")
+    auto_summary: bool = Field(default=True, description="是否自动生成AI摘要")
 
 
 class FetchByDateRequest(BaseModel):
@@ -139,6 +142,7 @@ class FetchByDateRequest(BaseModel):
     date_from: Optional[datetime] = Field(default=None, description="开始日期（包含）")
     date_to: Optional[datetime] = Field(default=None, description="结束日期（包含）")
     max_results: int = Field(default=200, ge=1, le=500, description="最大抓取数量")
+    auto_summary: bool = Field(default=True, description="是否自动生成AI摘要")
 
 
 class FetchResponse(BaseModel):
@@ -191,3 +195,67 @@ class StatsResponse(BaseModel):
     categories: Dict[str, int] = Field(default_factory=dict, description="各分类论文数量")
     tags: Dict[str, int] = Field(default_factory=dict, description="各标签论文数量")
     recent_papers_count: int = Field(default=0, description="最近7天新增论文数")
+
+
+# ==================== 热门度相关 Schema ====================
+
+
+class TrendingPaperCard(PaperCard):
+    """热门论文卡片。
+
+    包含热门度排名信息。
+    """
+
+    rank: int = Field(description="排名")
+    popularity_components: Optional[Dict[str, Any]] = Field(
+        default=None, description="热门度组成详情"
+    )
+
+
+class TrendingPapersResponse(BaseModel):
+    """热门论文列表响应。
+
+    按热门度排名返回论文列表。
+    """
+
+    papers: List[TrendingPaperCard]
+    date: str = Field(description="统计日期")
+    total_analyzed: int = Field(description="已分析论文数")
+
+
+class BatchAnalyzeResponse(BaseModel):
+    """批量分析响应。
+
+    返回批量分析操作的结果。
+    """
+
+    total: int = Field(description="总处理数量")
+    success: int = Field(description="成功数量")
+    failed: int = Field(description="失败数量")
+    papers: List[Dict[str, Any]] = Field(default_factory=list, description="处理结果列表")
+    message: str = Field(default="", description="结果消息")
+
+
+# ==================== 每日热门论文 Schema ====================
+
+
+class DailyTrendingPapers(BaseModel):
+    """单日热门论文数据。
+
+    包含某一天的热门论文列表和统计信息。
+    """
+
+    date: str = Field(description="日期，格式 YYYY-MM-DD")
+    papers: List[TrendingPaperCard] = Field(description="该日热门论文列表")
+    total_that_day: int = Field(description="该日论文总数")
+
+
+class DailyTrendingResponse(BaseModel):
+    """每日热门论文响应。
+
+    按日期分组返回热门论文。
+    """
+
+    days: List[DailyTrendingPapers] = Field(description="每日热门论文列表")
+    total_days: int = Field(description="返回的天数")
+    total_papers: int = Field(description="论文总数")
