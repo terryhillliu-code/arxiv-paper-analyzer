@@ -600,7 +600,7 @@ async def export_to_obsidian(
 
     # 生成并保存 Markdown
     generator = MarkdownGenerator()
-    filepath = generator.generate_paper_md(
+    result = generator.generate_paper_md(
         {
             "title": paper.title,
             "authors": paper.authors,
@@ -608,17 +608,20 @@ async def export_to_obsidian(
             "publish_date": paper.publish_date,
             "arxiv_url": paper.arxiv_url,
             "tags": paper.tags,
+            "arxiv_id": paper.arxiv_id,
         },
         paper.analysis_json or {},
         paper.analysis_report or "",
+        pdf_path=paper.pdf_local_path,
     )
 
     # 更新数据库
-    paper.md_output_path = filepath
+    paper.md_output_path = result.get("md_path")
     await db.commit()
 
     return {
         "message": "导出成功",
-        "filepath": filepath,
+        "md_path": result.get("md_path"),
+        "pdf_path": result.get("pdf_path"),
         "paper_id": paper_id,
     }
