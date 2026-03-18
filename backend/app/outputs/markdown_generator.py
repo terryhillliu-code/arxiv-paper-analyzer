@@ -111,6 +111,10 @@ overall_rating: {analysis_json.get('overall_rating', 'B')}
 
         tier_text = {"A": "⭐⭐⭐ 深度干货", "B": "⭐⭐ 实用向导", "C": "⭐ 一般参考"}
 
+        # 安全格式化列表字段
+        authors = self._safe_join(paper_data.get('authors', []))
+        institutions = self._safe_join(paper_data.get('institutions', []))
+
         return f"""# {title}
 
 > **内容等级**：{tier_text.get(tier, "⭐⭐ 实用向导")} | **综合评级**：{rating}
@@ -119,8 +123,8 @@ overall_rating: {analysis_json.get('overall_rating', 'B')}
 
 | 项目 | 内容 |
 |------|------|
-| 作者 | {', '.join(paper_data.get('authors', [])) or '未知'} |
-| 机构 | {', '.join(paper_data.get('institutions', [])) or '未知'} |
+| 作者 | {authors or '未知'} |
+| 机构 | {institutions or '未知'} |
 | 发布日期 | {paper_data.get('publish_date', '') or '未知'} |
 | 来源 | [{paper_data.get('arxiv_url', '')}]({paper_data.get('arxiv_url', '')}) |
 
@@ -143,16 +147,30 @@ overall_rating: {analysis_json.get('overall_rating', 'B')}
 - [{title}]({paper_data.get('arxiv_url', '')})
 """
 
-    def _format_action_items(self, items: List[str]) -> str:
+    def _safe_join(self, items) -> str:
+        """安全地将列表或字符串转换为逗分隔的字符串。"""
+        if not items:
+            return ""
+        if isinstance(items, str):
+            return items
+        return ", ".join(str(item) for item in items)
+
+    def _format_action_items(self, items) -> str:
         """格式化行动建议。"""
         if not items:
             return "- [ ] 待补充"
+        # 确保 items 是列表
+        if isinstance(items, str):
+            items = [items]
         return "\n".join([f"- [ ] {item}" for item in items])
 
-    def _format_knowledge_links(self, links: List[str]) -> str:
+    def _format_knowledge_links(self, links) -> str:
         """格式化知识关联。"""
         if not links:
             return "待补充"
+        # 确保 links 是列表
+        if isinstance(links, str):
+            links = [links]
         return " · ".join([f"[[{link.strip('[]')}]]" for link in links])
 
     def _sanitize_filename(self, title: str) -> str:

@@ -344,7 +344,7 @@ overall_rating: {analysis_json.get("overall_rating", "B")}
 
 ## 🔗 知识关联
 
-{" · ".join([f"[[{link.strip('[]')}]]" for link in knowledge_links]) if knowledge_links else "待补充"}
+{self._render_knowledge_links(knowledge_links)}
 
 ## 📚 参考资料
 
@@ -368,7 +368,19 @@ overall_rating: {analysis_json.get("overall_rating", "B")}
         """渲染行动建议为 checkbox 列表。"""
         if not items:
             return "- [ ] 待补充"
+        # 确保 items 是列表
+        if isinstance(items, str):
+            items = [items]
         return "\n".join([f"- [ ] {item}" for item in items])
+
+    def _render_knowledge_links(self, links) -> str:
+        """渲染知识关联。"""
+        if not links:
+            return "待补充"
+        # 确保 links 是列表
+        if isinstance(links, str):
+            links = [links]
+        return " · ".join([f"[[{link.strip('[]')}]]" for link in links])
 
     @staticmethod
     def _parse_json(text: str) -> Dict[str, Any]:
