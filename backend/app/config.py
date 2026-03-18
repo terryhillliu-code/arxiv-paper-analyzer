@@ -24,6 +24,8 @@ class Settings(BaseSettings):
 
     # API 配置
     anthropic_api_key: str = ""
+    dashscope_api_key: str = ""  # 阿里百炼 API Key
+    coding_plan_api_key: str = ""  # Coding Plan API Key
 
     # 数据库配置
     database_url: str = "sqlite+aiosqlite:///./data/papers.db"
@@ -35,7 +37,7 @@ class Settings(BaseSettings):
     pdf_storage_path: str = "./data/pdfs"
 
     # AI 模型配置
-    ai_model: str = "glm-5"
+    ai_model: str = "qwen3.5-plus"  # 可选: qwen3.5-plus, glm-5, kimi-k2.5, qwen3-max-2026-01-23, MiniMax-M2.5
     ai_max_tokens: int = 8000
 
     # 预定义标签

@@ -164,7 +164,11 @@ DEEP_ANALYSIS_PROMPT = """你是一位专业学术论文分析专家，具有深
 对未来研究的建议。
 
 ### 📝 结论
-总结论文的价值和意义。
+总结论文的价值和意义，包括：
+1. 该研究解决了什么问题
+2. 提出的方法有什么创新
+3. 实验结果说明了什么
+4. 对该领域的影响和意义
 
 ---
 
@@ -173,8 +177,9 @@ DEEP_ANALYSIS_PROMPT = """你是一位专业学术论文分析专家，具有深
 1. **语言风格**：专业但易懂，适合研究生及以上水平的读者
 2. **数据准确**：引用论文中的具体数据和结论，不要编造
 3. **公式格式**：使用 LaTeX 语法，行内公式用 $...$，独立公式用 $$...$$
-4. **结构完整**：必须包含上述所有板块，尤其是「局限性分析」
+4. **结构完整**：必须包含上述所有板块，**每个小节都必须有实质性内容，不能留空或写"无"**
 5. **客观公正**：既肯定贡献，也指出不足
+6. **内容充实**：每个章节至少 2-3 句话，结论部分至少 100 字
 
 请开始撰写深度分析报告："""
 
@@ -194,7 +199,7 @@ ANALYSIS_JSON_PROMPT = """你是一位学术论文信息提取专家。请从以
 请提取以下字段，以 JSON 格式输出：
 
 1. **one_line_summary**（string）：论文的一句话总结，100 字以内
-2. **outline**（list[string]）：论文大纲，层级结构用缩进表示，最多 3 级
+2. **outline**（list[object]）：论文详细大纲，**必须是嵌套对象结构**，每个元素包含 title 和 children
 3. **key_contributions**（list[string]）：主要贡献，2-5 条
 4. **strengths**（list[string]）：论文优势，2-3 条
 5. **weaknesses**（list[string]）：论文不足，1-3 条
@@ -204,8 +209,13 @@ ANALYSIS_JSON_PROMPT = """你是一位学术论文信息提取专家。请从以
 9. **future_directions**（list[string]）：未来研究方向建议，1-3 条
 10. **overall_rating**（string）：综合评级，可选值："A"（优秀）、"B"（良好）、"C"（一般）
 11. **recommendation**（string）：推荐语，50 字以内
+12. **related_work**（object）：相关工作信息，包含以下字段：
+    - **key_references**（list[object]）：论文中引用的关键参考文献，每条包含 title（标题）、authors（作者）、year（年份）、contribution（与本研究的关联）
+    - **similar_papers**（list[string]）：与本研究方向相似或相关的论文主题描述，2-3 条
 
 ## 输出格式
+
+**重要：outline 必须是嵌套对象数组，不能是字符串数组！**
 
 严格按照以下 JSON 格式输出，不要添加任何额外文字：
 
@@ -213,12 +223,43 @@ ANALYSIS_JSON_PROMPT = """你是一位学术论文信息提取专家。请从以
 {{
     "one_line_summary": "...",
     "outline": [
-        "1. 引言",
-        "2. 相关工作",
-        "   2.1 ...",
-        "   2.2 ...",
-        "3. 方法",
-        "..."
+        {{
+            "title": "1. 引言",
+            "children": [
+                {{"title": "研究背景与动机", "children": []}},
+                {{"title": "核心问题定义", "children": []}}
+            ]
+        }},
+        {{
+            "title": "2. 相关工作",
+            "children": [
+                {{"title": "领域发展脉络", "children": []}},
+                {{"title": "现有方法局限", "children": []}}
+            ]
+        }},
+        {{
+            "title": "3. 方法",
+            "children": [
+                {{"title": "整体框架设计", "children": []}},
+                {{"title": "核心技术组件", "children": []}},
+                {{"title": "关键创新点", "children": []}}
+            ]
+        }},
+        {{
+            "title": "4. 实验",
+            "children": [
+                {{"title": "实验设置与数据集", "children": []}},
+                {{"title": "主要结果分析", "children": []}},
+                {{"title": "消融实验", "children": []}}
+            ]
+        }},
+        {{
+            "title": "5. 结论与展望",
+            "children": [
+                {{"title": "主要贡献总结", "children": []}},
+                {{"title": "未来研究方向", "children": []}}
+            ]
+        }}
     ],
     "key_contributions": [
         "贡献1",
@@ -239,14 +280,38 @@ ANALYSIS_JSON_PROMPT = """你是一位学术论文信息提取专家。请从以
         "方向2"
     ],
     "overall_rating": "A",
-    "recommendation": "推荐语..."
+    "recommendation": "推荐语...",
+    "related_work": {{
+        "key_references": [
+            {{
+                "title": "Attention Is All You Need",
+                "authors": "Vaswani et al.",
+                "year": "2017",
+                "contribution": "提出了 Transformer 架构，是本文方法的基础"
+            }},
+            {{
+                "title": "BERT: Pre-training of Deep Bidirectional Transformers",
+                "authors": "Devlin et al.",
+                "year": "2019",
+                "contribution": "双向预训练方法，本文借鉴了其训练策略"
+            }}
+        ],
+        "similar_papers": [
+            "基于 Transformer 的文本生成研究",
+            "大规模语言模型预训练方法"
+        ]
+    }}
 }}
 ```
 
-注意：
-- 只输出 JSON，不要有其他内容
-- 列表字段如果无法提取，填空列表 []
-- overall_rating 必须是 A、B、C 三选一
-- 所有字符串使用中文
+## 关键要求
+
+1. **outline 格式**：必须是 `[{{"title": "...", "children": [...]}}]` 这样的对象数组，**绝对不能是字符串数组**
+2. **大纲层级**：至少 5 个主章节，每个主章节下必须有 2-3 个子章节
+3. **子章节内容**：从论文中提取具体的章节名称，不要使用通用占位符
+4. **只输出 JSON**：不要有任何其他文字或说明
+5. **字段完整性**：所有字段都必须存在，无法提取的填空列表 [] 或空字符串 ""
+6. **overall_rating**：必须是 A、B、C 三选一
+7. **related_work**：从论文的"相关工作"和"参考文献"部分提取关键引用，key_references 列出 2-5 篇最重要的参考文献，similar_papers 描述相似研究方向
 
 请开始提取："""

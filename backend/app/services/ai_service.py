@@ -1,6 +1,8 @@
 """AI 服务模块。
 
-调用 Anthropic Claude API 进行论文分析。
+支持多种 AI API：
+- 阿里百炼 API (glm-5, qwen-plus 等)
+- Anthropic Claude API
 """
 
 import json
@@ -8,6 +10,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
+from openai import OpenAI
 import anthropic
 
 from app.config import get_settings
@@ -24,15 +27,79 @@ logger = logging.getLogger(__name__)
 class AIService:
     """AI 分析服务。
 
-    封装 Claude API 调用，提供论文摘要生成和深度分析功能。
+    支持 Coding Plan API (OpenAI 兼容) 和 Anthropic Claude API。
     """
 
+    # Coding Plan API 支持的模型
+    CODING_PLAN_MODELS = ["qwen3.5-plus", "glm-5", "kimi-k2.5", "qwen3-max-2026-01-23", "MiniMax-M2.5"]
+
+    # 百炼 API 支持的模型 (备用)
+    DASHSCOPE_MODELS = ["qwen-plus", "qwen-turbo", "qwen-max"]
+
     def __init__(self):
-        """初始化 Anthropic 客户端。"""
+        """初始化 AI 客户端。"""
         settings = get_settings()
-        self.client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
         self.model = settings.ai_model
         self.max_tokens = settings.ai_max_tokens
+
+        # 根据模型选择客户端
+        if self.model in self.CODING_PLAN_MODELS:
+            # 使用 Coding Plan API (OpenAI 兼容格式)
+            self.client_type = "coding_plan"
+            self.client = OpenAI(
+                api_key=settings.coding_plan_api_key,
+                base_url="https://coding.dashscope.aliyuncs.com/v1",
+            )
+            logger.info(f"使用 Coding Plan API，模型: {self.model}")
+        elif self.model in self.DASHSCOPE_MODELS:
+            # 使用百炼 API (OpenAI 兼容格式)
+            self.client_type = "dashscope"
+            self.client = OpenAI(
+                api_key=settings.dashscope_api_key,
+                base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            )
+            logger.info(f"使用百炼 API，模型: {self.model}")
+        else:
+            # 使用 Anthropic API
+            self.client_type = "anthropic"
+            self.client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+            logger.info(f"使用 Anthropic API，模型: {self.model}")
+
+    def _call_api(self, prompt: str, max_tokens: Optional[int] = None) -> str:
+        """统一调用 AI API。
+
+        Args:
+            prompt: 输入提示词
+            max_tokens: 最大输出 token 数
+
+        Returns:
+            模型响应文本
+        """
+        max_tokens = max_tokens or self.max_tokens
+
+        if self.client_type in ["coding_plan", "dashscope"]:
+            # Coding Plan API 和百炼 API 都使用 OpenAI 兼容格式
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=max_tokens,
+            )
+            return response.choices[0].message.content or ""
+        else:
+            # Anthropic API
+            message = self.client.messages.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            # 处理不同的 content block 类型
+            response_text = ""
+            for block in message.content:
+                if hasattr(block, "text"):
+                    response_text += block.text
+                elif hasattr(block, "content"):
+                    response_text += str(block.content)
+            return response_text
 
     async def generate_summary(
         self,
@@ -64,22 +131,8 @@ class AIService:
                 tags_library=", ".join(PREDEFINED_TAGS),
             )
 
-            # 调用 Claude API
-            message = self.client.messages.create(
-                model=self.model,
-                max_tokens=1024,
-                messages=[{"role": "user", "content": prompt}],
-            )
-
-            # 解析响应 - 处理不同的 content block 类型
-            response_text = ""
-            for block in message.content:
-                if hasattr(block, "text"):
-                    response_text += block.text
-                elif hasattr(block, "content"):
-                    # ThinkingBlock 可能有 content 属性
-                    response_text += str(block.content)
-
+            # 调用 AI API
+            response_text = self._call_api(prompt, max_tokens=1024)
             result = self._parse_json(response_text)
 
             # 验证 tags 是否在预设列表中
@@ -151,21 +204,9 @@ class AIService:
                 content=content,
             )
 
-            # 调用 Claude API
+            # 调用 AI API
             logger.info(f"开始生成深度分析: {title[:30]}...")
-            message = self.client.messages.create(
-                model=self.model,
-                max_tokens=self.max_tokens,
-                messages=[{"role": "user", "content": prompt}],
-            )
-
-            # 处理不同的 content block 类型
-            report = ""
-            for block in message.content:
-                if hasattr(block, "text"):
-                    report += block.text
-                elif hasattr(block, "content"):
-                    report += str(block.content)
+            report = self._call_api(prompt, max_tokens=self.max_tokens)
 
             logger.info(f"深度分析报告生成成功: {len(report)} 字符")
 
@@ -197,21 +238,8 @@ class AIService:
             # 格式化提示词
             prompt = ANALYSIS_JSON_PROMPT.format(report=report)
 
-            # 调用 Claude API
-            message = self.client.messages.create(
-                model=self.model,
-                max_tokens=2048,
-                messages=[{"role": "user", "content": prompt}],
-            )
-
-            # 处理不同的 content block 类型
-            response_text = ""
-            for block in message.content:
-                if hasattr(block, "text"):
-                    response_text += block.text
-                elif hasattr(block, "content"):
-                    response_text += str(block.content)
-
+            # 调用 AI API
+            response_text = self._call_api(prompt, max_tokens=2048)
             result = self._parse_json(response_text)
 
             logger.info("结构化数据提取成功")

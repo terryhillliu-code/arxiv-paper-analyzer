@@ -2,11 +2,14 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { format } from 'date-fns'
 import { zhCN } from 'date-fns/locale'
+import MindMap from 'simple-mind-map'
+import 'simple-mind-map/dist/simpleMindMap.esm.css'
 import AnalysisReport from '../components/AnalysisReport'
 import { fetchPaperDetail, analyzePaper } from '../api/papers'
 
-// 学科分类颜色映射
+// 学科分类颜色映射 - 扩展版
 const CATEGORY_COLORS = {
+  // 计算机科学
   'cs.AI': 'bg-purple-100 text-purple-700',
   'cs.CL': 'bg-blue-100 text-blue-700',
   'cs.LG': 'bg-green-100 text-green-700',
@@ -17,7 +20,70 @@ const CATEGORY_COLORS = {
   'cs.RO': 'bg-yellow-100 text-yellow-700',
   'cs.SE': 'bg-cyan-100 text-cyan-700',
   'cs.CR': 'bg-pink-100 text-pink-700',
+  'cs.HC': 'bg-indigo-100 text-indigo-700',
+  'cs.MM': 'bg-rose-100 text-rose-700',
+  'cs.DB': 'bg-amber-100 text-amber-700',
+  'cs.GR': 'bg-lime-100 text-lime-700',
+  'cs.NI': 'bg-emerald-100 text-emerald-700',
+  'cs.OS': 'bg-violet-100 text-violet-700',
+  'cs.PL': 'bg-fuchsia-100 text-fuchsia-700',
+  'cs.SC': 'bg-slate-100 text-slate-700',
+  'cs.SI': 'bg-zinc-100 text-zinc-700',
+  'cs.SY': 'bg-stone-100 text-stone-700',
+  'cs.MA': 'bg-red-100 text-red-700',
+  'cs.CC': 'bg-orange-100 text-orange-700',
+  'cs.CG': 'bg-teal-100 text-teal-700',
+  'cs.DS': 'bg-blue-100 text-blue-700',
+  'cs.ET': 'bg-purple-100 text-purple-700',
+  'cs.FL': 'bg-pink-100 text-pink-700',
+  'cs.GL': 'bg-green-100 text-green-700',
+  'cs.GT': 'bg-yellow-100 text-yellow-700',
+  'cs.AR': 'bg-indigo-100 text-indigo-700',
+  'cs.CY': 'bg-cyan-100 text-cyan-700',
+  'cs.MS': 'bg-sky-100 text-sky-700',
+  'cs.NA': 'bg-amber-100 text-amber-700',
+  'cs.PF': 'bg-lime-100 text-lime-700',
+  'cs.QL': 'bg-violet-100 text-violet-700',
+  'cs.SD': 'bg-fuchsia-100 text-fuchsia-700',
+  // 统计学
   'stat.ML': 'bg-emerald-100 text-emerald-700',
+  'stat.CO': 'bg-teal-100 text-teal-700',
+  'stat.TH': 'bg-green-100 text-green-700',
+  'stat.ME': 'bg-lime-100 text-lime-700',
+  // 数学
+  'math.OC': 'bg-blue-100 text-blue-700',
+  'math.NA': 'bg-indigo-100 text-indigo-700',
+  'math.ST': 'bg-purple-100 text-purple-700',
+  'math.PR': 'bg-pink-100 text-pink-700',
+  'math.LO': 'bg-violet-100 text-violet-700',
+  // 物理
+  'physics.comp-ph': 'bg-cyan-100 text-cyan-700',
+  'physics.data-an': 'bg-sky-100 text-sky-700',
+  // 电子工程
+  'eess.AS': 'bg-amber-100 text-amber-700',
+  'eess.IV': 'bg-orange-100 text-orange-700',
+  'eess.SP': 'bg-yellow-100 text-yellow-700',
+  'eess.SY': 'bg-lime-100 text-lime-700',
+  // 量化金融
+  'q-bio.QM': 'bg-rose-100 text-rose-700',
+  'q-bio.BM': 'bg-red-100 text-red-700',
+  'q-bio.CB': 'bg-orange-100 text-orange-700',
+  'q-bio.GN': 'bg-amber-100 text-amber-700',
+  'q-bio.MN': 'bg-yellow-100 text-yellow-700',
+  'q-bio.NC': 'bg-lime-100 text-lime-700',
+  'q-bio.PE': 'bg-green-100 text-green-700',
+  'q-bio.SC': 'bg-emerald-100 text-emerald-700',
+  'q-bio.TO': 'bg-teal-100 text-teal-700',
+  // 量化金融
+  'q-fin.CP': 'bg-cyan-100 text-cyan-700',
+  'q-fin.EC': 'bg-sky-100 text-sky-700',
+  'q-fin.GN': 'bg-blue-100 text-blue-700',
+  'q-fin.MF': 'bg-indigo-100 text-indigo-700',
+  'q-fin.PM': 'bg-violet-100 text-violet-700',
+  'q-fin.PR': 'bg-purple-100 text-purple-700',
+  'q-fin.RM': 'bg-fuchsia-100 text-fuchsia-700',
+  'q-fin.ST': 'bg-pink-100 text-pink-700',
+  'q-fin.TR': 'bg-rose-100 text-rose-700',
 }
 const DEFAULT_COLOR = 'bg-gray-100 text-gray-600'
 
@@ -294,7 +360,7 @@ export default function PaperDetail() {
             思维导图
           </h2>
           {analysis_json?.outline ? (
-            <OutlineTree outline={analysis_json.outline} />
+            <OutlineTree outline={analysis_json.outline} paperTitle={title} />
           ) : (
             <p className="text-gray-500">
               点击下方按钮生成深度分析后显示
@@ -362,15 +428,15 @@ export default function PaperDetail() {
             </h2>
             <div className="grid grid-cols-2 gap-6">
               {/* 主要贡献 */}
-              {analysis_json.main_contributions && (
+              {(analysis_json.key_contributions || analysis_json.main_contributions) && (
                 <div>
                   <h3 className="text-sm font-bold text-gray-500 mb-2">
                     主要贡献
                   </h3>
                   <ul className="list-disc list-inside text-sm text-gray-700 space-y-1">
-                    {(Array.isArray(analysis_json.main_contributions)
-                      ? analysis_json.main_contributions
-                      : [analysis_json.main_contributions]
+                    {(Array.isArray(analysis_json.key_contributions || analysis_json.main_contributions)
+                      ? (analysis_json.key_contributions || analysis_json.main_contributions)
+                      : [(analysis_json.key_contributions || analysis_json.main_contributions)]
                     ).map((item, i) => (
                       <li key={i}>{item}</li>
                     ))}
@@ -394,13 +460,13 @@ export default function PaperDetail() {
               )}
 
               {/* 不足 */}
-              {analysis_json.limitations && (
+              {(analysis_json.weaknesses || analysis_json.limitations) && (
                 <div>
                   <h3 className="text-sm font-bold text-gray-500 mb-2">不足</h3>
                   <ul className="list-disc list-inside text-sm text-gray-700 space-y-1">
-                    {(Array.isArray(analysis_json.limitations)
-                      ? analysis_json.limitations
-                      : [analysis_json.limitations]
+                    {(Array.isArray(analysis_json.weaknesses || analysis_json.limitations)
+                      ? (analysis_json.weaknesses || analysis_json.limitations)
+                      : [(analysis_json.weaknesses || analysis_json.limitations)]
                     ).map((item, i) => (
                       <li key={i}>{item}</li>
                     ))}
@@ -427,50 +493,355 @@ export default function PaperDetail() {
             </div>
           </div>
         )}
+
+        {/* 卡片6：相关工作与参考文献 */}
+        {has_analysis && analysis_json?.related_work && (
+          <div className="bg-white rounded-xl shadow-sm p-6">
+            <h2 className="text-xl font-bold mb-4 pb-2 border-b border-gray-200">
+              相关工作与参考文献
+            </h2>
+
+            {/* 关键参考文献 */}
+            {analysis_json.related_work.key_references &&
+             analysis_json.related_work.key_references.length > 0 && (
+              <div className="mb-6">
+                <h3 className="text-sm font-bold text-gray-500 mb-3">
+                  📚 关键参考文献
+                </h3>
+                <div className="space-y-3">
+                  {analysis_json.related_work.key_references.map((ref, i) => (
+                    <div key={i} className="bg-gray-50 rounded-lg p-3">
+                      <p className="font-medium text-gray-900 text-sm">
+                        {ref.title}
+                      </p>
+                      <p className="text-xs text-gray-500 mt-1">
+                        {ref.authors} · {ref.year}
+                      </p>
+                      {ref.contribution && (
+                        <p className="text-xs text-purple-700 mt-2 italic">
+                          ↳ {ref.contribution}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 相似研究方向 */}
+            {analysis_json.related_work.similar_papers &&
+             analysis_json.related_work.similar_papers.length > 0 && (
+              <div>
+                <h3 className="text-sm font-bold text-gray-500 mb-3">
+                  🔗 相似研究方向
+                </h3>
+                <div className="flex flex-wrap gap-2">
+                  {analysis_json.related_work.similar_papers.map((topic, i) => (
+                    <span
+                      key={i}
+                      className="px-3 py-1.5 bg-purple-50 text-purple-700 rounded-full text-sm"
+                    >
+                      {topic}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )
 }
 
-// 大纲树形组件
-function OutlineTree({ outline }) {
+// 思维导图组件 - 使用 simple-mind-map
+function OutlineTree({ outline, paperTitle }) {
+  const containerRef = useRef(null)
+  const mindMapRef = useRef(null)
+  const isInitializingRef = useRef(false)
+  const [mindMapError, setMindMapError] = useState(null)
+
+  useEffect(() => {
+    if (!outline || !containerRef.current || isInitializingRef.current) return
+
+    setMindMapError(null)
+    isInitializingRef.current = true
+
+    // 使用 setTimeout 确保 DOM 已渲染
+    const initTimer = setTimeout(() => {
+      try {
+        // 确保容器有尺寸
+        const rect = containerRef.current?.getBoundingClientRect()
+
+        if (!rect || rect.width <= 0 || rect.height <= 0) {
+          console.warn('MindMap container has zero dimensions')
+          setMindMapError('容器尺寸无效')
+          isInitializingRef.current = false
+          return
+        }
+
+        // 转换数据格式
+        const items = Array.isArray(outline) ? outline : [outline]
+        const mindData = convertToSimpleMindMapData(items, paperTitle)
+
+        console.log('MindMap data:', JSON.stringify(mindData, null, 2))
+
+        // 清理旧实例
+        if (mindMapRef.current) {
+          mindMapRef.current.destroy()
+          mindMapRef.current = null
+        }
+
+        // 清空容器内容
+        if (containerRef.current) {
+          containerRef.current.innerHTML = ''
+        }
+
+        // 创建新实例
+        mindMapRef.current = new MindMap({
+          el: containerRef.current,
+          data: mindData,
+          readonly: true,
+          layout: 'logicalStructure',
+          theme: 'default',
+          fit: true,
+        })
+
+        console.log('MindMap created successfully')
+
+        // 额外的自适应
+        setTimeout(() => {
+          if (mindMapRef.current && mindMapRef.current.view) {
+            mindMapRef.current.view.fit()
+          }
+        }, 100)
+      } catch (err) {
+        console.error('MindMap initialization error:', err)
+        setMindMapError(err.message || String(err))
+        isInitializingRef.current = false
+      }
+    }, 100)
+
+    return () => {
+      clearTimeout(initTimer)
+      if (mindMapRef.current) {
+        try {
+          mindMapRef.current.destroy()
+        } catch (e) {
+          console.error('MindMap destroy error:', e)
+        }
+        mindMapRef.current = null
+      }
+      isInitializingRef.current = false
+    }
+  }, [outline, paperTitle])
+
   if (!outline) return null
 
-  const items = Array.isArray(outline) ? outline : [outline]
-
   return (
-    <ul className="space-y-2">
-      {items.map((item, i) => (
-        <OutlineItem key={i} item={item} depth={0} />
-      ))}
-    </ul>
+    <div>
+      {/* MindMap 容器 */}
+      <div
+        ref={containerRef}
+        className="mindmap-container"
+        style={{ width: '100%', height: '500px' }}
+      />
+
+      {/* 错误提示和备用显示 */}
+      {mindMapError && (
+        <div className="mt-4">
+          <div className="p-2 bg-yellow-50 text-yellow-700 text-sm rounded mb-2">
+            思维导图加载失败: {mindMapError}
+          </div>
+          <div className="p-4 bg-gray-50 rounded-lg">
+            <OutlineTreeView outline={outline} paperTitle={paperTitle} />
+          </div>
+        </div>
+      )}
+    </div>
   )
 }
 
-function OutlineItem({ item, depth }) {
-  if (typeof item === 'string') {
+// 备用树形显示组件
+function OutlineTreeView({ outline, paperTitle }) {
+  const items = Array.isArray(outline) ? outline : [outline]
+  const isFlatStringList = items.length > 0 && typeof items[0] === 'string'
+
+  if (isFlatStringList) {
     return (
-      <li
-        className="text-sm text-gray-700"
-        style={{ paddingLeft: depth * 16 }}
-      >
-        • {item}
-      </li>
+      <div className="space-y-1">
+        <div className="font-bold text-purple-700 mb-2">{paperTitle || '论文大纲'}</div>
+        {items.map((item, index) => {
+          const text = typeof item === 'string' ? item.trim() : ''
+          const indentLevel = typeof item === 'string' ? (item.length - item.trimStart().length) : 0
+          const isMainChapter = text.match(/^\d+[.、\s]/)
+
+          return (
+            <div
+              key={index}
+              style={{ paddingLeft: `${indentLevel * 16 + 8}px` }}
+              className={`py-0.5 ${isMainChapter ? 'font-semibold text-gray-800' : 'text-gray-600'}`}
+            >
+              {isMainChapter && <span className="text-purple-600 mr-1">●</span>}
+              {text}
+            </div>
+          )
+        })}
+      </div>
     )
   }
 
-  const { title, children } = item
+  // 嵌套对象格式
+  return (
+    <div className="space-y-1">
+      <div className="font-bold text-purple-700 mb-2">{paperTitle || '论文大纲'}</div>
+      {items.map((item, index) => (
+        <OutlineNode key={index} item={item} />
+      ))}
+    </div>
+  )
+}
+
+function OutlineNode({ item, level = 0 }) {
+  if (typeof item === 'string') {
+    return (
+      <div style={{ paddingLeft: `${level * 16}px` }} className="py-0.5 text-gray-600">
+        {item}
+      </div>
+    )
+  }
+
+  const title = item.title || ''
+  const children = item.children || []
+  const isMainChapter = level === 0
 
   return (
-    <li style={{ paddingLeft: depth * 16 }}>
-      <span className="text-sm font-medium text-gray-800">{title}</span>
-      {children && children.length > 0 && (
-        <ul className="mt-1 space-y-1">
-          {children.map((child, i) => (
-            <OutlineItem key={i} item={child} depth={depth + 1} />
-          ))}
-        </ul>
-      )}
-    </li>
+    <div>
+      <div
+        style={{ paddingLeft: `${level * 16}px` }}
+        className={`py-0.5 ${isMainChapter ? 'font-semibold text-gray-800 mt-1' : 'text-gray-600'}`}
+      >
+        {isMainChapter ? (
+          <span className="text-purple-600 mr-1">●</span>
+        ) : (
+          <span className="text-gray-400 mr-1">○</span>
+        )}
+        {title}
+      </div>
+      {children.map((child, index) => (
+        <OutlineNode key={index} item={child} level={level + 1} />
+      ))}
+    </div>
   )
+}
+
+// 转换数据为 simple-mind-map 格式
+// 注意：直接传入 { data: {...}, children: [...] }，不需要 root 包装
+function convertToSimpleMindMapData(items, paperTitle) {
+  const isFlatStringList = items.length > 0 && typeof items[0] === 'string'
+
+  let children = []
+
+  if (isFlatStringList) {
+    // 智能解析扁平列表
+    children = parseFlatOutlineToChildren(items)
+  } else {
+    // 已经是嵌套对象格式
+    children = items.map(item => convertNodeToSimpleMindMap(item))
+  }
+
+  // 直接返回节点数据，不需要 root 包装
+  return {
+    data: {
+      text: paperTitle || '论文大纲'
+    },
+    children: children
+  }
+}
+
+// 解析扁平列表为 simple-mind-map children 格式
+function parseFlatOutlineToChildren(items) {
+  const mainChapters = []
+  let currentChapter = null
+  let currentSubChapter = null
+
+  items.forEach(item => {
+    const text = typeof item === 'string' ? item : ''
+    if (!text) return
+
+    const trimmedText = text.trim()
+    const indentLevel = text.length - text.trimStart().length
+
+    // 检测主章节：数字开头，如 "1. 引言" 或 "1 引言"
+    const mainMatch = trimmedText.match(/^(\d+)[.、\s]+(.+)/)
+
+    // 检测二级章节：如 "2.1 预备知识"
+    const subNumMatch = trimmedText.match(/^(\d+)\.(\d+)[.、\s]*(.+)/)
+
+    // 检测带破折号的子章节：如 "- 研究动机"
+    const dashMatch = trimmedText.match(/^[-–—•·]\s*(.+)/)
+
+    if (mainMatch && !subNumMatch) {
+      // 主章节
+      if (currentSubChapter && currentChapter) {
+        currentChapter.children.push(currentSubChapter)
+        currentSubChapter = null
+      }
+      if (currentChapter) {
+        mainChapters.push(currentChapter)
+      }
+      currentChapter = {
+        data: { text: mainMatch[2].trim() },
+        children: []
+      }
+    } else if (subNumMatch) {
+      // 二级章节 (如 2.1)
+      if (currentSubChapter && currentChapter) {
+        currentChapter.children.push(currentSubChapter)
+      }
+      currentSubChapter = {
+        data: { text: subNumMatch[3].trim() },
+        children: []
+      }
+    } else if (dashMatch && indentLevel > 0) {
+      // 带破折号的子章节
+      const subText = dashMatch[1].trim()
+      if (currentSubChapter) {
+        currentSubChapter.children.push({ data: { text: subText }, children: [] })
+      } else if (currentChapter) {
+        currentChapter.children.push({ data: { text: subText }, children: [] })
+      }
+    } else if (trimmedText && indentLevel > 0) {
+      // 其他缩进内容作为子节点
+      if (currentSubChapter) {
+        currentSubChapter.children.push({ data: { text: trimmedText }, children: [] })
+      } else if (currentChapter) {
+        currentChapter.children.push({ data: { text: trimmedText }, children: [] })
+      }
+    }
+  })
+
+  // 收尾
+  if (currentSubChapter && currentChapter) {
+    currentChapter.children.push(currentSubChapter)
+  }
+  if (currentChapter) {
+    mainChapters.push(currentChapter)
+  }
+
+  return mainChapters.length > 0 ? mainChapters : items.map(s => ({
+    data: { text: typeof s === 'string' ? s.trim() : s },
+    children: []
+  }))
+}
+
+// 转换嵌套对象为 simple-mind-map 格式
+function convertNodeToSimpleMindMap(item) {
+  if (typeof item === 'string') {
+    return { data: { text: item }, children: [] }
+  }
+  return {
+    data: { text: item.title || '' },
+    children: (item.children || []).map(child => convertNodeToSimpleMindMap(child))
+  }
 }
