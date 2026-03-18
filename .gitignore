@@ -43,6 +43,12 @@ backend/data/*.db
 backend/data/pdfs/*.pdf
 *.pdf
 
+# MinerU Cache
+backend/data/mineru_cache/*.md
+backend/data/mineru_cache/*.json
+backend/data/mineru_cache/*_images/
+backend/data/mineru_cache/temp_*/
+
 # Logs
 *.log
 logs/

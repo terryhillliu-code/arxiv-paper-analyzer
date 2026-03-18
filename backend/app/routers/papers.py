@@ -33,7 +33,7 @@ from app.schemas import (
 )
 from app.services.ai_service import ai_service
 from app.services.arxiv_service import ArxivService
-from app.services.pdf_service import PDFService
+from app.services.pdf_service import PDFService, pdf_service
 
 router = APIRouter(prefix="/api", tags=["papers"])
 
@@ -324,11 +324,16 @@ async def generate_summaries(
 async def analyze_paper(
     paper_id: int,
     force_refresh: bool = Query(False, description="是否强制重新分析"),
+    use_mineru: bool = Query(True, description="是否使用 MinerU 深度解析（保留结构）"),
     db: AsyncSession = Depends(get_db),
 ) -> AnalysisResponse:
     """对论文进行深度分析。
 
     使用 AI 生成详细的 Markdown 分析报告。
+
+    Args:
+        use_mineru: True 使用 MinerU 深度解析（保留表格、公式、结构），
+                   False 使用 PyMuPDF 快速提取纯文本。
     """
     # 查询论文
     query = select(Paper).where(Paper.id == paper_id)
@@ -348,15 +353,30 @@ async def analyze_paper(
         )
 
     try:
-        # 获取论文全文
         content = paper.full_text
+        content_metadata = {}
 
-        # 如果没有全文，尝试下载 PDF 提取
+        # 如果没有全文，下载 PDF 并解析
         if not content and paper.pdf_url and paper.arxiv_id:
-            content = await PDFService.get_paper_text(
+            # 下载 PDF
+            pdf_path = await pdf_service.download_pdf(
                 pdf_url=paper.pdf_url,
                 arxiv_id=paper.arxiv_id,
             )
+            paper.pdf_local_path = pdf_path  # 保存本地路径
+
+            # 根据 use_mineru 选择解析方式
+            if use_mineru:
+                logger.info(f"使用 MinerU 深度解析: {paper.arxiv_id}")
+                content, content_metadata = await pdf_service.extract_markdown(pdf_path)
+            else:
+                logger.info(f"使用 PyMuPDF 快速提取: {paper.arxiv_id}")
+                content = await PDFService.get_paper_text(
+                    pdf_url=paper.pdf_url,
+                    arxiv_id=paper.arxiv_id,
+                )
+                content_metadata = {"parser": "pymupdf"}
+
             # 保存全文
             if content:
                 paper.full_text = content
@@ -364,6 +384,7 @@ async def analyze_paper(
         # 如果全文不足，使用摘要
         if not content or len(content) < 500:
             content = paper.abstract or ""
+            content_metadata = {"parser": "abstract"}
             if not content:
                 raise HTTPException(
                     status_code=400,
@@ -625,3 +646,95 @@ async def export_to_obsidian(
         "pdf_path": result.get("pdf_path"),
         "paper_id": paper_id,
     }
+
+
+# ==================== PDF 解析 (MinerU) ====================
+
+
+@router.post("/papers/{paper_id}/extract")
+async def extract_paper_content(
+    paper_id: int,
+    force_refresh: bool = Query(False, description="是否强制刷新缓存"),
+    db: AsyncSession = Depends(get_db),
+):
+    """提取论文 PDF 内容（使用 MinerU 深度解析）。
+
+    返回结构化 Markdown，保留表格、公式、标题层级。
+    结果会缓存，避免重复解析。
+    """
+    result = await db.execute(select(Paper).where(Paper.id == paper_id))
+    paper = result.scalar_one_or_none()
+
+    if not paper:
+        raise HTTPException(status_code=404, detail="论文不存在")
+
+    if not paper.pdf_url:
+        raise HTTPException(status_code=400, detail="论文无 PDF 链接")
+
+    try:
+        # 下载 PDF
+        pdf_path = await pdf_service.download_pdf(
+            pdf_url=paper.pdf_url,
+            arxiv_id=paper.arxiv_id or str(paper_id),
+        )
+
+        # 使用 MinerU 提取 Markdown
+        md_content, metadata = await pdf_service.extract_markdown(
+            pdf_path,
+            force_refresh=force_refresh,
+        )
+
+        # 保存到论文记录
+        paper.full_text = md_content
+        paper.pdf_local_path = pdf_path
+        await db.commit()
+
+        return {
+            "paper_id": paper_id,
+            "title": paper.title,
+            "content_length": len(md_content),
+            "metadata": metadata,
+            "content_preview": md_content[:2000] if len(md_content) > 2000 else md_content,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF 解析失败: {str(e)}")
+
+
+@router.get("/papers/{paper_id}/cache-info")
+async def get_paper_cache_info(
+    paper_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """获取论文 PDF 解析缓存信息。"""
+    result = await db.execute(select(Paper).where(Paper.id == paper_id))
+    paper = result.scalar_one_or_none()
+
+    if not paper:
+        raise HTTPException(status_code=404, detail="论文不存在")
+
+    cache_info = {"paper_id": paper_id, "pdf_local_path": paper.pdf_local_path}
+
+    if paper.pdf_local_path:
+        cache_info.update(pdf_service.get_cache_info(paper.pdf_local_path))
+
+    return cache_info
+
+
+@router.delete("/papers/{paper_id}/cache")
+async def clear_paper_cache(
+    paper_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """清理论文 PDF 解析缓存。"""
+    result = await db.execute(select(Paper).where(Paper.id == paper_id))
+    paper = result.scalar_one_or_none()
+
+    if not paper:
+        raise HTTPException(status_code=404, detail="论文不存在")
+
+    if not paper.pdf_local_path:
+        return {"message": "无缓存可清理", "cleared": 0}
+
+    count = await pdf_service.clear_cache(paper.pdf_local_path)
+    return {"message": f"已清理 {count} 个缓存文件", "cleared": count}

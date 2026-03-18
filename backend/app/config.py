@@ -75,6 +75,20 @@ class Settings(BaseSettings):
         description="Markdown 输出的 Inbox 子目录"
     )
 
+    # PDF 解析配置
+    pdf_parser: str = Field(
+        default="auto",
+        description="PDF 解析器: pymupdf(快速) | mineru(深度) | auto(智能选择)"
+    )
+    mineru_cache_dir: str = Field(
+        default="./data/mineru_cache",
+        description="MinerU 解析结果缓存目录"
+    )
+    mineru_timeout: int = Field(
+        default=600,
+        description="MinerU 解析超时时间(秒)"
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:
