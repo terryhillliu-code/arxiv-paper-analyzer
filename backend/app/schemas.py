@@ -116,6 +116,21 @@ class FetchByCategoriesRequest(BaseModel):
     max_results: int = Field(default=50, ge=1, le=100, description="每个分类最大抓取数量")
 
 
+class FetchByDateRequest(BaseModel):
+    """按日期范围抓取请求。
+
+    抓取指定日期范围内的论文。
+    """
+
+    categories: Optional[List[str]] = Field(
+        default=["cs.AI", "cs.CL", "cs.LG", "cs.CV"],
+        description="ArXiv 分类列表，默认主要AI相关分类",
+    )
+    date_from: Optional[datetime] = Field(default=None, description="开始日期（包含）")
+    date_to: Optional[datetime] = Field(default=None, description="结束日期（包含）")
+    max_results: int = Field(default=200, ge=1, le=500, description="最大抓取数量")
+
+
 class FetchResponse(BaseModel):
     """抓取响应。
 

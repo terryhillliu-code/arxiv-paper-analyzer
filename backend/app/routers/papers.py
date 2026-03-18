@@ -17,6 +17,7 @@ from app.schemas import (
     AnalysisRequest,
     AnalysisResponse,
     FetchByCategoriesRequest,
+    FetchByDateRequest,
     FetchRequest,
     FetchResponse,
     PaperCard,
@@ -218,6 +219,31 @@ async def fetch_by_categories(
 
     return FetchResponse(
         total_fetched=result["total_fetched"],
+        new_papers=result["new_papers"],
+        message=result["message"],
+    )
+
+
+@router.post("/fetch/date-range", response_model=FetchResponse)
+async def fetch_by_date_range(
+    request: FetchByDateRequest,
+    db: AsyncSession = Depends(get_db),
+) -> FetchResponse:
+    """按日期范围抓取论文。
+
+    抓取指定日期范围内发布的论文。
+    注意：ArXiv API 不直接支持日期筛选，此接口通过抓取更多论文后过滤。
+    """
+    result = await ArxivService.fetch_by_date_range(
+        db=db,
+        categories=request.categories,
+        date_from=request.date_from,
+        date_to=request.date_to,
+        max_results=request.max_results,
+    )
+
+    return FetchResponse(
+        total_fetched=result.get("filtered_papers", result["total_fetched"]),
         new_papers=result["new_papers"],
         message=result["message"],
     )

@@ -4,7 +4,7 @@
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 import arxiv
@@ -197,3 +197,151 @@ class ArxivService:
         # 构建查询语句: 'all:"keyword1" OR all:"keyword2"'
         query = " OR ".join(f'all:"{kw}"' for kw in keywords)
         return await ArxivService.fetch_papers(db, query, max_results)
+
+    @staticmethod
+    async def fetch_by_date_range(
+        db: AsyncSession,
+        categories: Optional[List[str]] = None,
+        date_from: Optional[datetime] = None,
+        date_to: Optional[datetime] = None,
+        max_results: int = 200,
+    ) -> dict:
+        """按日期范围抓取论文。
+
+        ArXiv API 不直接支持日期筛选，此方法通过抓取更多论文后按日期过滤。
+
+        Args:
+            db: 异步数据库会话
+            categories: 分类列表，默认使用主要AI相关分类
+            date_from: 开始日期（包含）
+            date_to: 结束日期（包含）
+            max_results: 最大抓取数量（建议200-500以保证覆盖）
+
+        Returns:
+            抓取结果字典，包含：
+            - total_fetched: 总抓取数量
+            - new_papers: 新增论文数量
+            - filtered_papers: 日期范围内论文数量
+            - message: 结果消息
+        """
+        # 默认分类
+        if not categories:
+            categories = ["cs.AI", "cs.CL", "cs.LG", "cs.CV"]
+
+        # 处理时区：ArXiv 返回 UTC 时区，确保输入日期也有时区
+        if date_from and date_from.tzinfo is None:
+            date_from = date_from.replace(tzinfo=timezone.utc)
+        if date_to and date_to.tzinfo is None:
+            date_to = date_to.replace(tzinfo=timezone.utc)
+
+        # 构建查询
+        query = " OR ".join(f"cat:{cat}" for cat in categories)
+
+        fetch_log = FetchLog(
+            query=f"{query} (date filter: {date_from} to {date_to})",
+            total_fetched=0,
+            new_papers=0,
+            fetch_time=datetime.now(),
+            status="pending",
+        )
+
+        try:
+            client = arxiv.Client()
+            search = arxiv.Search(
+                query=query,
+                max_results=max_results,
+                sort_by=arxiv.SortCriterion.SubmittedDate,
+                sort_order=arxiv.SortOrder.Descending,
+            )
+
+            total_fetched = 0
+            new_papers = 0
+            filtered_papers = 0
+            early_stop = False
+
+            for result in client.results(search):
+                total_fetched += 1
+
+                # 日期过滤
+                if date_from or date_to:
+                    paper_date = result.published
+
+                    # 如果论文日期早于 date_from，停止抓取（因为是降序排列）
+                    if date_from and paper_date < date_from:
+                        logger.info(f"到达日期边界，停止抓取: {paper_date} < {date_from}")
+                        early_stop = True
+                        break
+
+                    # 如果论文日期晚于 date_to，跳过
+                    if date_to and paper_date > date_to:
+                        continue
+
+                filtered_papers += 1
+
+                # 解析 arxiv_id
+                arxiv_id = result.entry_id.split("/")[-1]
+                if "v" in arxiv_id:
+                    arxiv_id = arxiv_id.rsplit("v", 1)[0]
+
+                # 检查是否已存在
+                stmt = select(Paper).where(Paper.arxiv_id == arxiv_id)
+                existing = await db.execute(stmt)
+                if existing.scalar_one_or_none() is not None:
+                    continue
+
+                # 创建 Paper 对象
+                authors = [author.name for author in result.authors]
+                categories_list = [cat for cat in result.categories]
+
+                paper = Paper(
+                    arxiv_id=arxiv_id,
+                    title=result.title.strip(),
+                    authors=authors,
+                    abstract=result.summary.strip() if result.summary else None,
+                    categories=categories_list,
+                    publish_date=result.published,
+                    pdf_url=result.pdf_url,
+                    arxiv_url=result.entry_id,
+                )
+
+                db.add(paper)
+                new_papers += 1
+
+            await db.commit()
+
+            # 更新日志
+            fetch_log.total_fetched = total_fetched
+            fetch_log.new_papers = new_papers
+            fetch_log.status = "success"
+            db.add(fetch_log)
+            await db.commit()
+
+            message = f"抓取 {total_fetched} 篇，日期范围内 {filtered_papers} 篇，新增 {new_papers} 篇"
+            if early_stop:
+                message += f"（提前终止于日期边界）"
+
+            logger.info(message)
+
+            return {
+                "total_fetched": total_fetched,
+                "new_papers": new_papers,
+                "filtered_papers": filtered_papers,
+                "message": message,
+            }
+
+        except Exception as e:
+            await db.rollback()
+            error_msg = f"按日期抓取失败: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+
+            fetch_log.status = "failed"
+            fetch_log.error_message = error_msg
+            db.add(fetch_log)
+            await db.commit()
+
+            return {
+                "total_fetched": 0,
+                "new_papers": 0,
+                "filtered_papers": 0,
+                "message": error_msg,
+            }
