@@ -84,10 +84,15 @@ async def get_papers(
         query = query.where(or_(*tag_conditions))
 
     # 日期范围筛选
+    # 注意：date_to 需要设置为当天的 23:59:59，因为数据库日期包含时间部分
     if date_from:
-        query = query.where(Paper.publish_date >= date_from)
+        # date_from 设为当天 00:00:00
+        date_from_start = date_from.replace(hour=0, minute=0, second=0, microsecond=0)
+        query = query.where(Paper.publish_date >= date_from_start)
     if date_to:
-        query = query.where(Paper.publish_date <= date_to)
+        # date_to 设为当天 23:59:59
+        date_to_end = date_to.replace(hour=23, minute=59, second=59, microsecond=999999)
+        query = query.where(Paper.publish_date <= date_to_end)
 
     # 是否有分析
     if has_analysis is not None:

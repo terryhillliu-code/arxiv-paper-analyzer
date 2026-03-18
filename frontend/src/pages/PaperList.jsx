@@ -70,7 +70,11 @@ export default function PaperList() {
       if (search) params.search = search
       if (selectedCategory) params.categories = selectedCategory
       if (selectedTag) params.tags = selectedTag
-      if (dateFrom) params.date_from = dateFrom
+      if (dateFrom) {
+        // 选择日期时，同时设置 date_from 和 date_to，精确匹配当天
+        params.date_from = dateFrom
+        params.date_to = dateFrom
+      }
 
       const data = await fetchPapers(params)
       setPapers(data.papers || [])
