@@ -2,6 +2,8 @@
 
 生成符合 Obsidian 格式的 Markdown 文件。
 支持同时复制 PDF 到 Obsidian Vault。
+
+优先调用 zhiwei-obsidian 服务，服务不可用时回退到本地实现。
 """
 
 import os
@@ -13,20 +15,33 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# 尝试导入 Obsidian 客户端
+try:
+    from app.services.obsidian_client import obsidian_client
+    HAS_OBSIDIAN_CLIENT = True
+except ImportError:
+    HAS_OBSIDIAN_CLIENT = False
+    logger.warning("Obsidian 客户端不可用，使用本地实现")
+
 
 class MarkdownGenerator:
-    """Markdown 文件生成器。"""
+    """Markdown 文件生成器。
 
-    def __init__(self, output_dir: str = None, attachments_dir: str = None):
+    优先调用 zhiwei-obsidian 服务，服务不可用时回退到本地实现。
+    """
+
+    def __init__(self, output_dir: str = None, attachments_dir: str = None, prefer_service: bool = True):
         """初始化生成器。
 
         Args:
             output_dir: Markdown 输出目录，默认为 Obsidian Vault 的 Inbox
             attachments_dir: PDF 附件目录，默认为 Obsidian Vault 的 attachments
+            prefer_service: 是否优先使用 zhiwei-obsidian 服务
         """
         self.vault_path = Path(os.path.expanduser("~/Documents/ZhiweiVault"))
         self.output_dir = Path(output_dir or self.vault_path / "Inbox")
         self.attachments_dir = Path(attachments_dir or self.vault_path / "attachments")
+        self.prefer_service = prefer_service and HAS_OBSIDIAN_CLIENT
 
         # 确保目录存在
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -41,6 +56,8 @@ class MarkdownGenerator:
     ) -> Dict[str, str]:
         """生成论文 Markdown 文件并复制 PDF。
 
+        优先调用 zhiwei-obsidian 服务，服务不可用时回退到本地实现。
+
         Args:
             paper_data: 论文基础信息
             analysis_json: 分析结果 JSON
@@ -50,6 +67,29 @@ class MarkdownGenerator:
         Returns:
             包含 md_path 和 pdf_path 的字典
         """
+        # 尝试使用 zhiwei-obsidian 服务
+        if self.prefer_service and obsidian_client.is_available():
+            logger.info("使用 zhiwei-obsidian 服务导出")
+            result = obsidian_client.export_paper(
+                paper_data, analysis_json, report, pdf_path
+            )
+            if "error" not in result:
+                logger.info(f"服务导出成功: {result.get('md_path')}")
+                return result
+            else:
+                logger.warning(f"服务导出失败: {result.get('error')}，回退到本地实现")
+
+        # 本地实现
+        return self._local_generate_paper_md(paper_data, analysis_json, report, pdf_path)
+
+    def _local_generate_paper_md(
+        self,
+        paper_data: Dict[str, Any],
+        analysis_json: Dict[str, Any],
+        report: str,
+        pdf_path: str = None,
+    ) -> Dict[str, str]:
+        """本地实现：生成论文 Markdown 文件并复制 PDF。"""
         # 提取字段
         title = paper_data.get("title", "未知标题")
         arxiv_id = paper_data.get("arxiv_id", "")
