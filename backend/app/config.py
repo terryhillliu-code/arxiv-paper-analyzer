@@ -88,6 +88,10 @@ class Settings(BaseSettings):
         default=600,
         description="MinerU 解析超时时间(秒)"
     )
+    mineru_path: str = Field(
+        default="/Users/liufang/zhiwei-rag/mineru-venv/bin/mineru",
+        description="MinerU CLI 路径"
+    )
 
 
 @lru_cache

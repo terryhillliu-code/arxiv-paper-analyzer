@@ -248,8 +248,28 @@ class AIService:
             report: Markdown 格式的分析报告
 
         Returns:
-            结构化的分析数据字典
+            结构化的分析数据字典，确保关键字段存在
         """
+        # 定义默认值
+        DEFAULT_VALUES = {
+            "one_line_summary": "",
+            "outline": [],
+            "key_contributions": [],
+            "strengths": [],
+            "weaknesses": [],
+            "methodology": "",
+            "datasets": [],
+            "metrics": [],
+            "future_directions": [],
+            "overall_rating": "B",
+            "recommendation": "",
+            "related_work": {"key_references": [], "similar_papers": []},
+            "action_items": [],
+            "knowledge_links": [],
+            "tier": "B",
+            "tags": [],
+        }
+
         try:
             # 格式化提示词
             prompt = ANALYSIS_JSON_PROMPT.format(report=report)
@@ -258,12 +278,20 @@ class AIService:
             response_text = self._call_api(prompt, max_tokens=2048)
             result = self._parse_json(response_text)
 
+            # 合并默认值，确保所有字段存在
+            for key, default_value in DEFAULT_VALUES.items():
+                if key not in result or result[key] is None:
+                    result[key] = default_value
+                elif isinstance(default_value, list) and not isinstance(result[key], list):
+                    # 如果期望是列表但返回不是，转换为列表
+                    result[key] = [result[key]] if result[key] else default_value
+
             logger.info("结构化数据提取成功")
             return result
 
         except Exception as e:
             logger.error(f"提取结构化数据失败: {e}", exc_info=True)
-            return {}
+            return DEFAULT_VALUES.copy()
 
     def _generate_markdown_output(
         self,
@@ -397,41 +425,67 @@ overall_rating: {analysis_json.get("overall_rating", "B")}
         if not text:
             return {}
 
-        # 策略 1: 直接解析
+        # 策略 1: 从 ```json ... ``` 代码块中提取（优先处理）
+        # 使用更健壮的正则，支持多行和可选的 json 标签
+        json_block_patterns = [
+            r"```json\s*([\s\S]*?)\s*```",  # ```json ... ```
+            r"```\s*([\s\S]*?)\s*```",       # ``` ... ```
+        ]
+        for pattern in json_block_patterns:
+            matches = re.findall(pattern, text, re.DOTALL)
+            for match in matches:
+                try:
+                    result = json.loads(match.strip())
+                    if isinstance(result, dict):
+                        return result
+                except json.JSONDecodeError as e:
+                    logger.debug(f"代码块 JSON 解析失败: {e}")
+                    continue
+
+        # 策略 2: 直接解析
         try:
-            return json.loads(text)
+            result = json.loads(text.strip())
+            if isinstance(result, dict):
+                return result
         except json.JSONDecodeError:
             pass
 
-        # 策略 2: 从 ```json ... ``` 代码块中提取
-        json_block_pattern = r"```(?:json)?\s*\n?(.*?)\n?```"
-        matches = re.findall(json_block_pattern, text, re.DOTALL)
-        for match in matches:
-            try:
-                return json.loads(match.strip())
-            except json.JSONDecodeError:
-                continue
-
-        # 策略 3: 从文本中找到 { ... } 部分
-        brace_pattern = r"\{[\s\S]*\}"
-        matches = re.findall(brace_pattern, text)
-        for match in matches:
-            try:
-                return json.loads(match)
-            except json.JSONDecodeError:
-                continue
+        # 策略 3: 从文本中找到第一个完整的 { ... } 对象
+        # 使用栈匹配确保提取完整的 JSON 对象
+        start = text.find("{")
+        if start != -1:
+            brace_count = 0
+            end = start
+            for i, char in enumerate(text[start:], start):
+                if char == "{":
+                    brace_count += 1
+                elif char == "}":
+                    brace_count -= 1
+                    if brace_count == 0:
+                        end = i + 1
+                        break
+            if end > start:
+                try:
+                    result = json.loads(text[start:end])
+                    if isinstance(result, dict):
+                        return result
+                except json.JSONDecodeError:
+                    pass
 
         # 策略 4: 尝试修复常见的 JSON 格式问题
-        # 移除可能的注释
-        cleaned = re.sub(r"//.*?\n", "", text)
-        cleaned = re.sub(r"/\*.*?\*/", "", cleaned, flags=re.DOTALL)
+        cleaned = re.sub(r"//.*?\n", "", text)  # 移除单行注释
+        cleaned = re.sub(r"/\*.*?\*/", "", cleaned, flags=re.DOTALL)  # 移除多行注释
+        cleaned = re.sub(r",\s*}", "}", cleaned)  # 移除尾随逗号
+        cleaned = re.sub(r",\s*]", "]", cleaned)
         try:
-            return json.loads(cleaned)
+            result = json.loads(cleaned)
+            if isinstance(result, dict):
+                return result
         except json.JSONDecodeError:
             pass
 
         # 都失败则返回空字典
-        logger.warning(f"JSON 解析失败，返回空字典。原始文本: {text[:200]}...")
+        logger.warning(f"JSON 解析失败，返回空字典。原始文本前 500 字符:\n{text[:500]}")
         return {}
 
 

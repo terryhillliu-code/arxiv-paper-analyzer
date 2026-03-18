@@ -201,7 +201,7 @@ class PDFService:
             shutil.rmtree(output_dir, ignore_errors=True)
 
         cmd = [
-            "mineru",
+            self.settings.mineru_path,
             "-p", str(pdf_path),
             "-o", str(output_dir),
             "-m", "auto",
@@ -209,12 +209,18 @@ class PDFService:
 
         logger.info(f"执行命令: {' '.join(cmd)}")
 
+        # 设置环境变量（HuggingFace 镜像）
+        import os
+        env = os.environ.copy()
+        env["HF_ENDPOINT"] = "https://hf-mirror.com"
+
         try:
             # 异步执行子进程
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=env,
             )
 
             stdout, stderr = await asyncio.wait_for(
@@ -262,7 +268,7 @@ class PDFService:
         except asyncio.TimeoutError:
             raise RuntimeError(f"MinerU 解析超时 ({self.settings.mineru_timeout}s)")
         except FileNotFoundError:
-            raise RuntimeError("MinerU 未安装，请运行: pip install magic-pdf[full]")
+            raise RuntimeError(f"MinerU 未找到: {self.settings.mineru_path}")
 
     def _get_cache_key(self, pdf_path: Path) -> str:
         """基于文件内容生成缓存 key。
