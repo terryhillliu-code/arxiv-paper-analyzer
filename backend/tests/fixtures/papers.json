@@ -1,0 +1,31 @@
+{
+  "papers": [
+    {
+      "id": 1,
+      "title": "Attention Is All You Need",
+      "arxiv_id": "1706.03762",
+      "authors": ["Ashish Vaswani", "Noam Shazeer", "Niki Parmar"],
+      "abstract": "The dominant sequence transduction models are based on complex recurrent or convolutional neural networks...",
+      "publish_date": "2017-06-12",
+      "categories": ["cs.CL", "cs.LG"],
+      "tags": ["Transformer", "Attention", "NLP"],
+      "tier": "A",
+      "summary": "提出了 Transformer 架构，完全基于注意力机制，无需循环和卷积。",
+      "key_contributions": ["提出自注意力机制", "并行化训练", "长距离依赖建模"],
+      "institutions": ["Google Brain", "Google Research"],
+      "knowledge_links": ["Transformer架构", "自注意力机制", "位置编码"]
+    },
+    {
+      "id": 2,
+      "title": "BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding",
+      "arxiv_id": "1810.04805",
+      "authors": ["Jacob Devlin", "Ming-Wei Chang", "Kenton Lee", "Kristina Toutanova"],
+      "abstract": "We introduce a new language representation model called BERT...",
+      "publish_date": "2018-10-11",
+      "categories": ["cs.CL"],
+      "tags": ["BERT", "Pre-training", "NLP"],
+      "tier": "A",
+      "summary": "提出 BERT 模型，通过双向 Transformer 进行预训练。"
+    }
+  ]
+}
