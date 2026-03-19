@@ -274,19 +274,37 @@ class AIService:
             # 格式化提示词
             prompt = ANALYSIS_JSON_PROMPT.format(report=report)
 
-            # 调用 AI API
-            response_text = self._call_api(prompt, max_tokens=2048)
+            # 调用 AI API（增加 token 限制以容纳完整 JSON）
+            response_text = self._call_api(prompt, max_tokens=4096)
             result = self._parse_json(response_text)
 
             # 合并默认值，确保所有字段存在
             for key, default_value in DEFAULT_VALUES.items():
                 if key not in result or result[key] is None:
                     result[key] = default_value
+                    logger.warning(f"字段 '{key}' 缺失，使用默认值")
                 elif isinstance(default_value, list) and not isinstance(result[key], list):
                     # 如果期望是列表但返回不是，转换为列表
                     result[key] = [result[key]] if result[key] else default_value
 
-            logger.info("结构化数据提取成功")
+            # 验证 outline 格式
+            if result.get("outline"):
+                outline_valid = self._validate_outline(result["outline"])
+                if not outline_valid:
+                    logger.warning("outline 格式无效，使用空列表")
+                    result["outline"] = []
+
+            # 验证 related_work 格式
+            if not isinstance(result.get("related_work"), dict):
+                result["related_work"] = {"key_references": [], "similar_papers": []}
+            else:
+                if "key_references" not in result["related_work"]:
+                    result["related_work"]["key_references"] = []
+                if "similar_papers" not in result["related_work"]:
+                    result["related_work"]["similar_papers"] = []
+
+            logger.info(f"结构化数据提取成功: outline={len(result.get('outline', []))} 章节, "
+                       f"contributions={len(result.get('key_contributions', []))} 条")
             return result
 
         except Exception as e:
@@ -409,6 +427,30 @@ overall_rating: {analysis_json.get("overall_rating", "B")}
         if isinstance(links, str):
             links = [links]
         return " · ".join([f"[[{link.strip('[]')}]]" for link in links])
+
+    def _validate_outline(self, outline: List[Dict]) -> bool:
+        """验证 outline 格式是否正确。
+
+        Args:
+            outline: 大纲数据
+
+        Returns:
+            是否有效
+        """
+        if not outline or not isinstance(outline, list):
+            return False
+
+        for item in outline:
+            if not isinstance(item, dict):
+                return False
+            if "title" not in item:
+                return False
+            # 递归验证 children
+            if "children" in item and item["children"]:
+                if not self._validate_outline(item["children"]):
+                    return False
+
+        return True
 
     @staticmethod
     def _parse_json(text: str) -> Dict[str, Any]:
