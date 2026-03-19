@@ -358,4 +358,5 @@ def _format_paper_full(paper: Any) -> Dict[str, Any]:
         "one_line_summary": paper.one_line_summary,
         "overall_rating": paper.overall_rating,
         "pdf_url": paper.pdf_url,
+        "content_type": paper.content_type or "paper",
     }

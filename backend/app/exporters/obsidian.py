@@ -231,6 +231,24 @@ class ObsidianExporter(BaseExporter):
         # 限制长度
         return safe[:100].strip()
 
+    def _get_type_prefix(self, content_type: str) -> str:
+        """
+        根据内容类型获取文件名前缀
+
+        Args:
+            content_type: 内容类型 (paper, video, article, report)
+
+        Returns:
+            文件名前缀
+        """
+        type_prefixes = {
+            "paper": "PAPER",
+            "video": "VIDEO",
+            "article": "NOTE",
+            "report": "REPORT",
+        }
+        return type_prefixes.get(content_type, "NOTE")
+
     async def export_to_vault(
         self,
         paper: Dict[str, Any],
@@ -324,11 +342,13 @@ class ObsidianExporter(BaseExporter):
             import shutil
 
             title = self._get_field(paper, "title", "未命名")
+            content_type = self._get_field(paper, "content_type", "paper")
             date_str = datetime.now().strftime("%Y-%m-%d")
             safe_title = self._sanitize_filename(title)
+            type_prefix = self._get_type_prefix(content_type)
 
-            # Markdown 文件
-            md_filename = f"{date_str}_{safe_title}.md"
+            # Markdown 文件（带类型前缀）
+            md_filename = f"{type_prefix}_{date_str}_{safe_title}.md"
             output_dir = self.output_dir if folder == "Inbox" else self.vault_path / folder
             output_dir.mkdir(parents=True, exist_ok=True)
             md_path = output_dir / md_filename

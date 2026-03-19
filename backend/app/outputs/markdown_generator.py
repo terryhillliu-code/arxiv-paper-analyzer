@@ -93,13 +93,15 @@ class MarkdownGenerator:
         # 提取字段
         title = paper_data.get("title", "未知标题")
         arxiv_id = paper_data.get("arxiv_id", "")
+        content_type = paper_data.get("content_type", "paper")
 
-        # 生成文件名
+        # 生成文件名（带类型前缀）
         date_str = datetime.now().strftime("%Y-%m-%d")
         safe_title = self._sanitize_filename(title)
+        type_prefix = self._get_type_prefix(content_type)
 
         # Markdown 文件
-        md_filename = f"{date_str}_{safe_title}.md"
+        md_filename = f"{type_prefix}_{date_str}_{safe_title}.md"
         md_filepath = self.output_dir / md_filename
 
         # 生成 Markdown 内容（包含 PDF 链接）
@@ -261,3 +263,20 @@ overall_rating: {analysis_json.get('overall_rating', 'B')}
         safe = "".join(c for c in title if c.isalnum() or c in " -_")
         # 限制长度
         return safe[:50].strip()
+
+    def _get_type_prefix(self, content_type: str) -> str:
+        """根据内容类型获取文件名前缀。
+
+        Args:
+            content_type: 内容类型 (paper, video, article, report)
+
+        Returns:
+            文件名前缀
+        """
+        type_prefixes = {
+            "paper": "PAPER",
+            "video": "VIDEO",
+            "article": "NOTE",
+            "report": "REPORT",
+        }
+        return type_prefixes.get(content_type, "NOTE")

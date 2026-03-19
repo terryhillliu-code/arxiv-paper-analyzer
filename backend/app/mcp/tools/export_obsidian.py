@@ -98,6 +98,7 @@ class ExportToObsidianTool(BaseTool):
                 "analysis_report": paper.analysis_report,
                 "one_line_summary": paper.one_line_summary,
                 "overall_rating": paper.overall_rating,
+                "content_type": paper.content_type or "paper",
             }
 
             # 创建导出器

@@ -54,7 +54,7 @@ async def get_papers(
     date_from: Optional[datetime] = Query(None, description="开始日期"),
     date_to: Optional[datetime] = Query(None, description="结束日期"),
     has_analysis: Optional[bool] = Query(None, description="是否有分析"),
-    sort_by: str = Query("newest", description="排序方式: newest, oldest, views"),
+    sort_by: Optional[str] = Query(None, description="排序方式: newest, oldest, views"),
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(20, ge=1, le=100, description="每页数量"),
     db: AsyncSession = Depends(get_db),
@@ -114,13 +114,16 @@ async def get_papers(
     total_result = await db.execute(count_query)
     total = total_result.scalar() or 0
 
-    # 排序
+    # 排序：未指定时按 ID 降序（最近添加的在前）
     if sort_by == "oldest":
         query = query.order_by(Paper.publish_date.asc())
     elif sort_by == "views":
         query = query.order_by(Paper.view_count.desc())
-    else:  # newest
+    elif sort_by == "newest":
         query = query.order_by(Paper.publish_date.desc())
+    else:
+        # 默认：按 ID 降序
+        query = query.order_by(Paper.id.desc())
 
     # 分页
     offset = (page - 1) * page_size
@@ -416,6 +419,7 @@ async def analyze_trending_papers(
                         "arxiv_url": paper.arxiv_url,
                         "arxiv_id": paper.arxiv_id,
                         "tags": paper.tags,
+                        "content_type": paper.content_type or "paper",
                     },
                     analysis_json=analysis_json or {},
                     report=paper.analysis_report or "",
@@ -713,6 +717,7 @@ async def analyze_daily_trending_papers(
                         "arxiv_url": paper.arxiv_url,
                         "arxiv_id": paper.arxiv_id,
                         "tags": paper.tags,
+                        "content_type": paper.content_type or "paper",
                     },
                     analysis_json=analysis_json or {},
                     report=paper.analysis_report or "",
@@ -1351,6 +1356,7 @@ async def analyze_paper(
                     "arxiv_url": paper.arxiv_url,
                     "arxiv_id": paper.arxiv_id,
                     "tags": paper.tags,
+                    "content_type": paper.content_type or "paper",
                 },
                 analysis_json=analysis_json or {},
                 report=paper.analysis_report or "",
@@ -1550,6 +1556,7 @@ async def export_to_obsidian(
             "arxiv_url": paper.arxiv_url,
             "tags": paper.tags,
             "arxiv_id": paper.arxiv_id,
+            "content_type": paper.content_type or "paper",
         },
         paper.analysis_json or {},
         paper.analysis_report or "",
