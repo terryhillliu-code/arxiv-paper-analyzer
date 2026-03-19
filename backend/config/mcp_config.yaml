@@ -1,0 +1,29 @@
+# MCP Server 配置
+# 用于 AI 助手集成（Claude Desktop 等）
+
+# 权限配置
+permission:
+  # 权限模式: read_only | full_access
+  # read_only: 仅允许查询和导出操作
+  # full_access: 允许分析和修改操作
+  mode: read_only
+
+  # 自定义工具列表（可选，留空则使用默认配置）
+  # read_only_tools:
+  #   - search_papers
+  #   - get_paper
+  #   - get_trending
+  #   - export_to_bibtex
+  # full_access_tools:
+  #   - analyze_paper
+  #   - generate_summary
+  #   - export_to_obsidian
+
+# 后端 API 配置
+api_base_url: http://localhost:8000
+
+# Obsidian 服务配置
+obsidian_service_url: http://127.0.0.1:8766
+
+# 日志级别
+log_level: INFO
