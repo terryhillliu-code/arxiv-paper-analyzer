@@ -1,8 +1,10 @@
 """ArXiv 论文抓取服务模块。
 
 提供从 ArXiv 获取论文并存储到数据库的功能。
+支持抓取后自动生成AI摘要。
 """
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -78,11 +80,20 @@ class ArxivService:
                 sort_order=arxiv.SortOrder.Descending,
             )
 
+            # 使用线程池执行同步的 arxiv 调用，避免阻塞事件循环
+            def _fetch_sync():
+                results = []
+                for result in client.results(search):
+                    results.append(result)
+                return results
+
+            all_results = await asyncio.to_thread(_fetch_sync)
+
             total_fetched = 0
             new_papers = 0
 
-            # 遍历搜索结果
-            for result in client.results(search):
+            # 处理结果
+            for result in all_results:
                 total_fetched += 1
 
                 # 从 entry_id 中解析 arxiv_id
@@ -119,7 +130,7 @@ class ArxivService:
                 db.add(paper)
                 new_papers += 1
 
-            # 提交事务
+            # 提交事务（批量提交）
             await db.commit()
 
             # 更新抓取日志
@@ -254,12 +265,21 @@ class ArxivService:
                 sort_order=arxiv.SortOrder.Descending,
             )
 
+            # 使用线程池执行同步的 arxiv 调用
+            def _fetch_sync():
+                results = []
+                for result in client.results(search):
+                    results.append(result)
+                return results
+
+            all_results = await asyncio.to_thread(_fetch_sync)
+
             total_fetched = 0
             new_papers = 0
             filtered_papers = 0
             early_stop = False
 
-            for result in client.results(search):
+            for result in all_results:
                 total_fetched += 1
 
                 # 日期过滤

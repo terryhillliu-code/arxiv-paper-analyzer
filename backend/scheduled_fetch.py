@@ -13,9 +13,12 @@ ArXiv 论文定时抓取脚本
     python scheduled_fetch.py --date 2026-03-15  # 抓取指定日期
     python scheduled_fetch.py --dry-run    # 试运行，不实际写入
 
-定时任务（每天早上10点）：
-    # 添加到 crontab
-    0 10 * * * cd /path/to/backend && /path/to/venv/bin/python scheduled_fetch.py >> /path/to/logs/fetch.log 2>&1
+定时任务建议：
+    ArXiv 使用美国东部时间（ET）发布论文，北京时间比 ET 早 12-13 小时。
+    建议在北京时间晚上 22:00 或 23:00 运行，确保获取当天最新论文。
+
+    # 添加到 crontab（北京时间 22:00）
+    0 22 * * * cd /path/to/backend && /path/to/venv/bin/python scheduled_fetch.py >> /path/to/logs/fetch.log 2>&1
 """
 
 import argparse
@@ -53,6 +56,7 @@ class ScheduledFetcher:
         retry_delay: int = 60,
         categories: Optional[list] = None,
         max_results: int = 300,
+        max_concurrent_ai: int = 3,
     ):
         """
         Args:
@@ -60,11 +64,15 @@ class ScheduledFetcher:
             retry_delay: 重试间隔（秒）
             categories: 要抓取的分类
             max_results: 每次最大抓取数量
+            max_concurrent_ai: AI 摘要生成并发数限制
         """
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.categories = categories or ["cs.AI", "cs.CL", "cs.LG", "cs.CV"]
         self.max_results = max_results
+        self.max_concurrent_ai = max_concurrent_ai
+        # 并发控制信号量
+        self._semaphore = asyncio.Semaphore(max_concurrent_ai)
 
     async def fetch_papers_with_retry(
         self,
@@ -107,8 +115,12 @@ class ScheduledFetcher:
 
         raise Exception(f"抓取失败，已重试 {self.max_retries} 次: {last_error}")
 
-    async def generate_summaries_with_retry(self, limit: int = 50) -> dict:
-        """带重试的 AI 摘要生成"""
+    async def generate_summaries_with_retry(self, limit: int = 20) -> dict:
+        """带重试的 AI 摘要生成
+
+        Args:
+            limit: 每次处理的最大论文数（默认 20，减少资源占用）
+        """
         last_error = None
 
         for attempt in range(1, self.max_retries + 1):
@@ -134,22 +146,34 @@ class ScheduledFetcher:
                     success_count = 0
                     failed_count = 0
 
-                    for paper in papers:
+                    for i, paper in enumerate(papers):
                         try:
-                            # 调用 AI 生成摘要
-                            summary_result = await ai_service.generate_summary(
-                                title=paper.title,
-                                authors=paper.authors or [],
-                                abstract=paper.abstract or "",
-                                categories=paper.categories or [],
-                            )
+                            # 使用信号量控制并发
+                            async with self._semaphore:
+                                # 添加短暂延迟，让出事件循环
+                                await asyncio.sleep(0.05)
 
-                            paper.summary = summary_result.get("summary", "")
-                            paper.tags = summary_result.get("tags", [])
-                            paper.institutions = summary_result.get("institutions", [])
-                            success_count += 1
+                                # 调用 AI 生成摘要
+                                summary_result = await ai_service.generate_summary(
+                                    title=paper.title,
+                                    authors=paper.authors or [],
+                                    abstract=paper.abstract or "",
+                                    categories=paper.categories or [],
+                                )
 
-                            logger.info(f"摘要生成成功: {paper.title[:50]}...")
+                                paper.summary = summary_result.get("summary", "")
+                                paper.tags = summary_result.get("tags", [])
+                                paper.institutions = summary_result.get("institutions", [])
+                                success_count += 1
+
+                                logger.info(f"摘要生成成功: {paper.title[:50]}...")
+
+                                # 每 5 篇论文让出控制权并提交一次
+                                if (i + 1) % 5 == 0:
+                                    await db.commit()
+                                    logger.info(f"已处理 {i + 1} 篇论文，中间提交完成")
+                                    # 让出控制权
+                                    await asyncio.sleep(0)
 
                         except Exception as e:
                             failed_count += 1
@@ -198,12 +222,15 @@ class ScheduledFetcher:
             执行结果
         """
         # 设置日期范围（默认昨天和今天）
+        # 注意：ArXiv 使用美国东部时间发布，存在时差
+        # 北京时间早上时，ArXiv 可能还未发布当天的论文
         today = datetime.now(timezone.utc).replace(
             hour=23, minute=59, second=59, microsecond=0
         )
-        yesterday = (today - timedelta(days=1)).replace(
+        # 正确计算昨天：先设置为今天 00:00，再减一天
+        yesterday = today.replace(
             hour=0, minute=0, second=0, microsecond=0
-        )
+        ) - timedelta(days=1)
 
         if not date_from:
             date_from = yesterday
