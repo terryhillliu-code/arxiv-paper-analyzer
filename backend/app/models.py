@@ -74,6 +74,11 @@ class Paper(DeclarativeBase):
         String(1), nullable=True
     )  # A, B, C
 
+    # 是否已完整模式分析（仅 Tier A 论文需要）
+    full_analysis: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+
     # 行动建议（Obsidian 格式）
     action_items: Mapped[Optional[List[str]]] = mapped_column(
         JSON, nullable=True

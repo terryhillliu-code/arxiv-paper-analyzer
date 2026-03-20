@@ -230,28 +230,32 @@ ANALYSIS_JSON_PROMPT = """你是一位学术论文信息提取专家。请从以
 
 请提取以下字段，以 JSON 格式输出：
 
-1. **one_line_summary**（string）：论文的一句话总结，100 字以内
-2. **outline**（list[object]）：**思维导图大纲**，详细要求见下方"大纲结构规范"
-3. **key_contributions**（list[string]）：主要贡献，2-5 条
-4. **strengths**（list[string]）：论文优势，2-3 条
-5. **weaknesses**（list[string]）：论文不足，1-3 条
-6. **methodology**（string）：方法类型（如"深度学习"、"强化学习"、"理论分析"等）
-7. **datasets**（list[string]）：使用的数据集名称
-8. **metrics**（list[string]）：评估指标名称
-9. **future_directions**（list[string]）：未来研究方向建议，1-3 条
-10. **overall_rating**（string）：综合评级，可选值："A"（优秀）、"B"（良好）、"C"（一般）
-11. **recommendation**（string）：推荐语，50 字以内
-12. **related_work**（object）：相关工作信息，包含以下字段：
-    - **key_references**（list[object]）：论文中引用的关键参考文献，每条包含 title（标题）、authors（作者）、year（年份）、contribution（与本研究的关联）
-    - **similar_papers**（list[string]）：与本研究方向相似或相关的论文主题描述，2-3 条
-13. **action_items**（list[string]）：行动建议，2-3 条可执行的建议
-14. **knowledge_links**（list[string]）：知识关联，与本论文相关的概念或笔记
-15. **tier**（string）：内容等级，**严格按照以下标准评级**：
+**重要：先输出简短字段，最后输出长字段（outline），避免截断关键信息**
+
+1. **tier**（string）：内容等级，**严格按照以下标准评级**：
     - **"A"（顶尖创新）**：仅限具有重大突破的论文，需满足：(1) 提出全新方法/理论范式 (2) 在主流基准上取得显著 SOTA (3) 引发广泛社区关注。**预期占比约 10-15%**
     - **"B"（有价值贡献）**：有明确创新点或实证价值，方法合理但非颠覆性。**预期占比约 50-60%**
     - **"C"（一般参考）**：增量式改进、应用导向或初步探索，创新性有限。**预期占比约 25-35%**
 
     **重要**：不要轻易给 A！大部分论文应为 B 或 C。只有真正的突破性工作才配得上 A。
+
+2. **tags**（list[string]）：论文主题标签，2-3 个，用于分类和检索
+3. **one_line_summary**（string）：论文的一句话总结，100 字以内
+4. **key_contributions**（list[string]）：主要贡献，2-5 条
+5. **methodology**（string）：方法类型（如"深度学习"、"强化学习"、"理论分析"等）
+6. **overall_rating**（string）：综合评级，可选值："A"（优秀）、"B"（良好）、"C"（一般）
+7. **strengths**（list[string]）：论文优势，2-3 条
+8. **weaknesses**（list[string]）：论文不足，1-3 条
+9. **datasets**（list[string]）：使用的数据集名称
+10. **metrics**（list[string]）：评估指标名称
+11. **future_directions**（list[string]）：未来研究方向建议，1-3 条
+12. **recommendation**（string）：推荐语，50 字以内
+13. **action_items**（list[string]）：行动建议，2-3 条可执行的建议
+14. **knowledge_links**（list[string]）：知识关联，与本论文相关的概念或笔记
+15. **related_work**（object）：相关工作信息，包含以下字段：
+    - **key_references**（list[object]）：论文中引用的关键参考文献，每条包含 title（标题）、authors（作者）、year（年份）、contribution（与本研究的关联）
+    - **similar_papers**（list[string]）：与本研究方向相似或相关的论文主题描述，2-3 条
+16. **outline**（list[object]）：**思维导图大纲**（放最后），详细要求见下方"大纲结构规范"
 
 ---
 
