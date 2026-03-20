@@ -237,7 +237,7 @@ class AIService:
                             return quick_client.chat.completions.create(
                                 model=quick_model,
                                 messages=[{"role": "user", "content": prompt_json}],
-                                max_tokens=4096,
+                                max_tokens=8192,  # 增加以避免截断
                             )
 
                         response = await asyncio.to_thread(_sync_json_call)
