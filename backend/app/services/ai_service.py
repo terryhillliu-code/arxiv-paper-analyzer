@@ -5,6 +5,7 @@
 - Anthropic Claude API
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -133,8 +134,8 @@ class AIService:
                 tags_library=", ".join(PREDEFINED_TAGS),
             )
 
-            # 调用 AI API
-            response_text = self._call_api(prompt, max_tokens=1024)
+            # 调用 AI API (在线程池中运行，避免阻塞事件循环)
+            response_text = await asyncio.to_thread(self._call_api, prompt, max_tokens=1024)
             result = self._parse_json(response_text)
 
             # 验证 tags 是否在预设列表中
@@ -206,9 +207,9 @@ class AIService:
                 content=content,
             )
 
-            # 调用 AI API
+            # 调用 AI API (在线程池中运行，避免阻塞事件循环)
             logger.info(f"开始生成深度分析: {title[:30]}...")
-            report = self._call_api(prompt, max_tokens=self.max_tokens)
+            report = await asyncio.to_thread(self._call_api, prompt, max_tokens=self.max_tokens)
 
             logger.info(f"深度分析报告生成成功: {len(report)} 字符")
 
@@ -274,8 +275,8 @@ class AIService:
             # 格式化提示词
             prompt = ANALYSIS_JSON_PROMPT.format(report=report)
 
-            # 调用 AI API（增加 token 限制以容纳完整 JSON）
-            response_text = self._call_api(prompt, max_tokens=4096)
+            # 调用 AI API（增加 token 限制以容纳完整 JSON）(在线程池中运行)
+            response_text = await asyncio.to_thread(self._call_api, prompt, max_tokens=4096)
             result = self._parse_json(response_text)
 
             # 合并默认值，确保所有字段存在
