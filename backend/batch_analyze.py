@@ -117,7 +117,7 @@ async def continuous_analyze(check_interval: float = 30.0):
             return False
 
     # 并行配置
-    max_concurrent = 6  # 并发数
+    max_concurrent = 3  # 并发数（降低以减少系统负载）
 
     while True:
         # 获取未分析论文
