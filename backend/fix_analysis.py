@@ -50,8 +50,6 @@ async def fix_paper(paper, ai_service, semaphore):
     """修复单篇论文"""
     async with semaphore:
         try:
-            logger.info(f"修复论文 {paper.id}: {paper.title[:40]}...")
-
             # 从已有报告提取结构化数据
             analysis_json = await ai_service._extract_analysis_json(paper.analysis_report)
 
@@ -73,7 +71,7 @@ async def fix_paper(paper, ai_service, semaphore):
                 if success:
                     tags = analysis_json.get("tags", [])
                     outline_count = len(analysis_json.get("outline", []))
-                    logger.info(f"✅ 论文 {paper.id} 修复成功: tags={tags}, outline={outline_count}章节")
+                    logger.info(f"✅ 论文 {paper.id}: tags={tags}, outline={outline_count}章节")
                     return True
                 else:
                     logger.error(f"❌ 论文 {paper.id} 写入失败")
@@ -83,7 +81,7 @@ async def fix_paper(paper, ai_service, semaphore):
                 return False
 
         except Exception as e:
-            logger.error(f"❌ 论文 {paper.id} 修复失败: {e}")
+            logger.error(f"❌ 论文 {paper.id} 失败: {e}")
             return False
 
 
@@ -92,7 +90,7 @@ async def main():
     from app.services.ai_service import ai_service
 
     logger.info("=" * 60)
-    logger.info("开始修复已分析论文的 tags 和 outline")
+    logger.info("开始修复已分析论文的 tags 和 outline（并行加速版）")
     logger.info("=" * 60)
 
     # 启动写入服务
@@ -106,25 +104,34 @@ async def main():
         logger.info("没有需要修复的论文")
         return
 
-    # 并发控制
-    semaphore = asyncio.Semaphore(3)  # 限制并发数，避免 API 限流
+    # 并发控制 - 提高到 6 个并发
+    semaphore = asyncio.Semaphore(6)
 
-    # 批量修复
+    # 并行处理，每批 20 篇
+    batch_size = 20
     success_count = 0
     fail_count = 0
 
-    for i, paper in enumerate(papers):
-        logger.info(f"\n进度: {i+1}/{len(papers)}")
-        success = await fix_paper(paper, ai_service, semaphore)
-        if success:
-            success_count += 1
-        else:
-            fail_count += 1
+    for i in range(0, len(papers), batch_size):
+        batch = papers[i:i+batch_size]
+        logger.info(f"\n处理批次 {i//batch_size + 1}/{(len(papers)+batch_size-1)//batch_size} ({len(batch)} 篇)")
 
-        # 每处理 10 篇休息一下
-        if (i + 1) % 10 == 0:
-            logger.info(f"已处理 {i+1} 篇，成功 {success_count}，失败 {fail_count}")
-            await asyncio.sleep(2)
+        # 并行执行
+        tasks = [fix_paper(p, ai_service, semaphore) for p in batch]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 统计结果
+        for r in results:
+            if r is True:
+                success_count += 1
+            else:
+                fail_count += 1
+
+        logger.info(f"批次完成: 成功 {success_count}，失败 {fail_count}")
+
+        # 写入队列状态
+        stats = db_write_service.get_stats()
+        logger.info(f"写入队列: {stats}")
 
     logger.info("\n" + "=" * 60)
     logger.info(f"修复完成: 成功 {success_count}，失败 {fail_count}")
