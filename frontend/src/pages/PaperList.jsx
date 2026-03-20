@@ -3,7 +3,7 @@ import PaperCard from '../components/PaperCard'
 import {
   fetchPapers,
   fetchStats,
-  triggerFetch,
+  fetchPapersByDateRange,
   generateSummaries,
 } from '../api/papers'
 
@@ -54,7 +54,7 @@ export default function PaperList() {
   const [selectedCategory, setSelectedCategory] = useState(null)
   const [selectedTag, setSelectedTag] = useState(null)
   const [dateFrom, setDateFrom] = useState('')
-  const [sortBy, setSortBy] = useState('newest')
+  const [sortBy, setSortBy] = useState(null)  // null: 显示所有, 'newest': 最新发布
   const [page, setPage] = useState(1)
 
   // 加载论文列表
@@ -65,11 +65,11 @@ export default function PaperList() {
       const params = {
         page,
         page_size: PAGE_SIZE,
-        sort_by: sortBy,
       }
       if (search) params.search = search
       if (selectedCategory) params.categories = selectedCategory
       if (selectedTag) params.tags = selectedTag
+      if (sortBy) params.sort_by = sortBy  // 只在设置了排序时才传递
       if (dateFrom) {
         // 选择日期时，同时设置 date_from 和 date_to，精确匹配当天
         params.date_from = dateFrom
@@ -132,9 +132,9 @@ export default function PaperList() {
     setPage(1)
   }
 
-  // 排序切换
+  // 排序切换：在"全部"和"最新发布"之间切换
   const toggleSort = () => {
-    setSortBy((prev) => (prev === 'newest' ? 'oldest' : 'newest'))
+    setSortBy((prev) => (prev === 'newest' ? null : 'newest'))
     setPage(1)
   }
 
@@ -144,11 +144,12 @@ export default function PaperList() {
     loadStats()
   }
 
-  // 抓取论文
+  // 抓取论文（全量抓取昨天和今天）
   const handleFetch = async () => {
     setFetching(true)
     try {
-      await triggerFetch('cat:cs.AI OR cat:cs.CL OR cat:cs.LG OR cat:cs.CV', 20)
+      const result = await fetchPapersByDateRange()
+      console.log('抓取结果:', result)
       loadPapers()
       loadStats()
     } catch (err) {
@@ -291,16 +292,16 @@ export default function PaperList() {
               className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
             />
 
-            {/* 排序按钮 */}
+            {/* 排序按钮：按下显示最新，不按显示全部 */}
             <button
               onClick={toggleSort}
               className={`border rounded-lg px-3 py-1.5 text-sm transition-colors ${
-                sortBy === 'oldest'
+                sortBy === 'newest'
                   ? 'border-purple-700 text-purple-700 bg-purple-50'
                   : 'border-gray-300 text-gray-600 hover:bg-gray-50'
               }`}
             >
-              {sortBy === 'newest' ? '最新发布' : '最早发布'}
+              {sortBy === 'newest' ? '最新发布' : '全部'}
             </button>
 
             {/* 刷新按钮 */}

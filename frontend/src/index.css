@@ -68,8 +68,8 @@ body {
 }
 
 .markdown-body code {
-  background-color: rgba(147, 51, 234, 0.1);
-  color: #7c3aed;
+  background-color: rgba(0, 0, 0, 0.05);
+  color: #374151;
   padding: 0.2em 0.4em;
   border-radius: 6px;
   font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace;
@@ -91,12 +91,12 @@ body {
 }
 
 .markdown-body blockquote {
-  border-left: 4px solid #a78bfa;
-  background-color: #faf5ff;
+  border-left: 4px solid #9ca3af;
+  background-color: #f9fafb;
   padding: 0.5em 1em;
   margin-left: 0;
   margin-bottom: 1em;
-  color: #57606a;
+  color: #4b5563;
   border-radius: 0 6px 6px 0;
 }
 
@@ -122,12 +122,12 @@ body {
 }
 
 .markdown-body a {
-  color: #7c3aed;
+  color: #2563eb;
   text-decoration: none;
 }
 
 .markdown-body a:hover {
-  color: #5b21b6;
+  color: #1d4ed8;
   text-decoration: underline;
 }
 
@@ -239,11 +239,14 @@ body {
 /* ==================== 思维导图样式 ==================== */
 
 .mindmap-container {
-  background: linear-gradient(135deg, #faf5ff 0%, #f5f3ff 100%);
+  background: #fafafa;
   border-radius: 12px;
-  border: 1px solid #ede9fe;
+  border: 1px solid #e5e7eb;
   position: relative;
   overflow: hidden;
+  /* 禁止用户选择 */
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .mindmap-container .smm-mind-map-container {
@@ -258,13 +261,28 @@ body {
   display: block;
 }
 
-/* simple-mind-map 样式覆盖 */
+/* 节点样式 - 自适应宽度 */
 .mindmap-container .smm-node {
   cursor: default;
 }
 
+.mindmap-container .smm-node-container {
+  /* 节点框自适应内容 */
+  white-space: nowrap;
+}
+
+/* 节点文字样式 */
 .mindmap-container .smm-node-text {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-size: 15px !important;
+  white-space: nowrap;
+}
+
+/* 根节点（标题）样式 - 更大更突出 */
+.mindmap-container .smm-node[data-node-id="root"] .smm-node-text,
+.mindmap-container .smm-node:first-child .smm-node-text {
+  font-size: 17px !important;
+  font-weight: 600;
 }
 
 /* 确保节点容器可见 */

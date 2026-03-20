@@ -72,25 +72,25 @@ export default function AnalysisReport({ report }) {
             const isInline = !className
             if (isInline) {
               return (
-                <code className="px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded text-sm font-mono">
+                <code className="px-1.5 py-0.5 bg-gray-100 text-gray-700 rounded text-sm font-mono">
                   {children}
                 </code>
               )
             }
             return (
-              <code className="block bg-slate-100 text-slate-800 p-4 rounded-lg overflow-x-auto text-sm font-mono">
+              <code className="block bg-gray-100 text-gray-800 p-4 rounded-lg overflow-x-auto text-sm font-mono">
                 {children}
               </code>
             )
           },
           pre: ({ children }) => (
-            <pre className="bg-slate-100 rounded-lg my-4 overflow-hidden">
+            <pre className="bg-gray-100 rounded-lg my-4 overflow-hidden">
               {children}
             </pre>
           ),
           // 引用
           blockquote: ({ children }) => (
-            <blockquote className="border-l-4 border-blue-500 pl-4 py-2 my-4 bg-blue-50 text-gray-700 italic">
+            <blockquote className="border-l-4 border-gray-400 pl-4 py-2 my-4 bg-gray-50 text-gray-600 italic">
               {children}
             </blockquote>
           ),

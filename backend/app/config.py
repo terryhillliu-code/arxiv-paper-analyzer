@@ -85,7 +85,7 @@ class Settings(BaseSettings):
         description="MinerU 解析结果缓存目录"
     )
     mineru_timeout: int = Field(
-        default=600,
+        default=1200,
         description="MinerU 解析超时时间(秒)"
     )
     mineru_path: str = Field(

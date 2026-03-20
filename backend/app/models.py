@@ -9,6 +9,7 @@ from typing import List, Optional
 from sqlalchemy import (
     Boolean,
     DateTime,
+    Float,
     Index,
     Integer,
     String,
@@ -97,6 +98,11 @@ class Paper(DeclarativeBase):
     )
     view_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     is_featured: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    # 热门度分数（综合浏览量、分析状态、时效性）
+    popularity_score: Mapped[float] = mapped_column(
+        "popularity_score", Float, default=0.0, nullable=False
+    )
 
     def __repr__(self) -> str:
         return f"<Paper(id={self.id}, arxiv_id={self.arxiv_id}, title={self.title[:30]}...)>"

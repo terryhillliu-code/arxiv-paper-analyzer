@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.database import init_db
-from app.routers import papers
+from app.routers import papers, tasks
 
 # 配置日志
 logging.basicConfig(
@@ -75,6 +75,7 @@ app.add_middleware(
 
 # 注册路由
 app.include_router(papers.router)
+app.include_router(tasks.router)
 
 
 # 全局异常处理器

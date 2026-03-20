@@ -5,7 +5,7 @@ import { zhCN } from 'date-fns/locale'
 import MindMap from 'simple-mind-map'
 import 'simple-mind-map/dist/simpleMindMap.esm.css'
 import AnalysisReport from '../components/AnalysisReport'
-import { fetchPaperDetail, analyzePaper } from '../api/papers'
+import { fetchPaperDetail, createAnalysisTask, getTaskStatus } from '../api/papers'
 
 // 学科分类颜色映射 - 扩展版
 const CATEGORY_COLORS = {
@@ -122,49 +122,51 @@ export default function PaperDetail() {
     loadPaper()
   }, [loadPaper])
 
-  // 触发分析
+  // 触发分析（异步任务模式）
   const handleAnalyze = async (forceRefresh = false) => {
     setAnalyzing(true)
     setAnalysisMessage(null)
-    setAnalysisProgress('正在初始化...')
-
-    const progressPhases = [
-      { time: 5000, text: '正在下载 PDF...' },
-      { time: 15000, text: '正在提取文本...' },
-      { time: 25000, text: 'AI 正在分析论文内容...' },
-      { time: 40000, text: '正在生成深度分析报告...' },
-      { time: 60000, text: '分析即将完成，请稍候...' },
-    ]
-
-    progressPhaseRef.current = 0
-    const scheduleNextPhase = () => {
-      if (progressPhaseRef.current < progressPhases.length) {
-        const phase = progressPhases[progressPhaseRef.current]
-        progressTimerRef.current = setTimeout(() => {
-          setAnalysisProgress(phase.text)
-          progressPhaseRef.current++
-          scheduleNextPhase()
-        }, phase.time - (progressPhaseRef.current > 0 ? progressPhases[progressPhaseRef.current - 1].time : 0))
-      }
-    }
-    scheduleNextPhase()
+    setAnalysisProgress('正在创建分析任务...')
 
     try {
-      const result = await analyzePaper(id, forceRefresh)
-      setAnalysisMessage({ type: 'success', text: '分析完成' })
-      setPaper((prev) => ({
-        ...prev,
-        analysis_report: result.report,
-        analysis_json: result.analysis_json,
-        has_analysis: true,
-      }))
+      // 创建异步任务
+      const task = await createAnalysisTask(id, true, forceRefresh)
+      const taskId = task.id
+
+      setAnalysisProgress(task.message || '任务已创建，正在处理...')
+
+      // 轮询任务状态
+      const pollInterval = 2000 // 2秒轮询一次
+      let completed = false
+
+      while (!completed) {
+        await new Promise(resolve => setTimeout(resolve, pollInterval))
+
+        const status = await getTaskStatus(taskId)
+
+        // 更新进度显示
+        if (status.progress > 0) {
+          setAnalysisProgress(`${status.message || '处理中...'} (${status.progress}%)`)
+        } else {
+          setAnalysisProgress(status.message || '处理中...')
+        }
+
+        // 检查任务状态
+        if (status.status === 'completed') {
+          completed = true
+          setAnalysisMessage({ type: 'success', text: '分析完成' })
+
+          // 刷新论文数据
+          const updatedPaper = await fetchPaperDetail(id)
+          setPaper(updatedPaper)
+        } else if (status.status === 'failed') {
+          completed = true
+          setAnalysisMessage({ type: 'error', text: `分析失败: ${status.error || '未知错误'}` })
+        }
+      }
     } catch (err) {
       setAnalysisMessage({ type: 'error', text: `分析失败: ${err.message}` })
     } finally {
-      if (progressTimerRef.current) {
-        clearTimeout(progressTimerRef.current)
-        progressTimerRef.current = null
-      }
       setAnalyzing(false)
       setAnalysisProgress('')
     }
@@ -557,9 +559,11 @@ export default function PaperDetail() {
 // 思维导图组件 - 使用 simple-mind-map
 function OutlineTree({ outline, paperTitle }) {
   const containerRef = useRef(null)
+  const wrapperRef = useRef(null)
   const mindMapRef = useRef(null)
   const isInitializingRef = useRef(false)
   const [mindMapError, setMindMapError] = useState(null)
+  const [isFullscreen, setIsFullscreen] = useState(false)
 
   useEffect(() => {
     if (!outline || !containerRef.current || isInitializingRef.current) return
@@ -597,19 +601,35 @@ function OutlineTree({ outline, paperTitle }) {
           containerRef.current.innerHTML = ''
         }
 
-        // 创建新实例
+        // 创建新实例 - 固定中心，只允许缩放
         mindMapRef.current = new MindMap({
           el: containerRef.current,
           data: mindData,
           readonly: true,
-          layout: 'logicalStructure',
+          layout: 'mindMap', // 经典思维导图布局：左右对称展开
           theme: 'default',
           fit: true,
+          // 连线样式：贝塞尔曲线
+          lineStyle: 'curve',
+          // 节点样式配置
+          nodeStyle: {
+            radius: 8,
+            paddingX: 14,
+            paddingY: 8,
+            fontSize: 15,
+          },
+          // 完全禁用拖拽
+          isDisableDrag: true,
+          // 禁用鼠标滚轮操作
+          disableMouseWheelZoom: true,
+          mousewheelAction: '',
+          // 阻止默认事件
+          mousedownEventPreventDefault: true,
         })
 
         console.log('MindMap created successfully')
 
-        // 额外的自适应
+        // 初始自适应
         setTimeout(() => {
           if (mindMapRef.current && mindMapRef.current.view) {
             mindMapRef.current.view.fit()
@@ -636,16 +656,139 @@ function OutlineTree({ outline, paperTitle }) {
     }
   }, [outline, paperTitle])
 
+  // 监听全屏变化
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      const fullscreen = !!document.fullscreenElement
+      setIsFullscreen(fullscreen)
+      // 全屏状态变化时重新调整
+      setTimeout(() => {
+        if (mindMapRef.current && mindMapRef.current.view) {
+          mindMapRef.current.view.fit()
+        }
+      }, 100)
+    }
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange)
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange)
+    }
+  }, [])
+
+  // 重置视角 - 居中并自适应
+  const handleResetView = () => {
+    if (mindMapRef.current) {
+      mindMapRef.current.view.fit()
+    }
+  }
+
+  // 放大 - 以中心为基准
+  const handleZoomIn = () => {
+    if (mindMapRef.current) {
+      const view = mindMapRef.current.view
+      view.enlarge()
+    }
+  }
+
+  // 缩小 - 以中心为基准
+  const handleZoomOut = () => {
+    if (mindMapRef.current) {
+      const view = mindMapRef.current.view
+      view.narrow()
+    }
+  }
+
+  // 切换全屏
+  const handleToggleFullscreen = async () => {
+    if (!wrapperRef.current) return
+
+    try {
+      if (!document.fullscreenElement) {
+        await wrapperRef.current.requestFullscreen()
+      } else {
+        await document.exitFullscreen()
+      }
+    } catch (err) {
+      console.error('Fullscreen error:', err)
+    }
+  }
+
   if (!outline) return null
 
   return (
     <div>
+      {/* 控制按钮 */}
+      <div className="flex gap-2 mb-3">
+        <button
+          onClick={handleZoomIn}
+          className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded transition-colors"
+          title="放大"
+        >
+          🔍+
+        </button>
+        <button
+          onClick={handleZoomOut}
+          className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded transition-colors"
+          title="缩小"
+        >
+          🔍-
+        </button>
+        <button
+          onClick={handleResetView}
+          className="px-3 py-1.5 text-sm bg-purple-100 hover:bg-purple-200 text-purple-700 rounded transition-colors"
+          title="居中显示"
+        >
+          🎯 居中显示
+        </button>
+        <button
+          onClick={handleToggleFullscreen}
+          className="px-3 py-1.5 text-sm bg-blue-100 hover:bg-blue-200 text-blue-700 rounded transition-colors"
+          title={isFullscreen ? '退出全屏' : '全屏查看'}
+        >
+          {isFullscreen ? '🗴 退出全屏' : '⛶ 全屏查看'}
+        </button>
+      </div>
+
       {/* MindMap 容器 */}
       <div
-        ref={containerRef}
-        className="mindmap-container"
-        style={{ width: '100%', height: '500px' }}
-      />
+        ref={wrapperRef}
+        className={`mindmap-wrapper ${isFullscreen ? 'bg-white p-4' : ''}`}
+        style={isFullscreen ? { height: '100vh', overflow: 'hidden' } : { overflow: 'hidden' }}
+      >
+        {isFullscreen && (
+          <div className="absolute top-4 right-4 z-10 flex gap-2">
+            <button
+              onClick={handleZoomIn}
+              className="px-3 py-1.5 text-sm bg-white/90 hover:bg-white shadow rounded transition-colors"
+            >
+              🔍+
+            </button>
+            <button
+              onClick={handleZoomOut}
+              className="px-3 py-1.5 text-sm bg-white/90 hover:bg-white shadow rounded transition-colors"
+            >
+              🔍-
+            </button>
+            <button
+              onClick={handleResetView}
+              className="px-3 py-1.5 text-sm bg-purple-100/90 hover:bg-purple-100 shadow text-purple-700 rounded transition-colors"
+            >
+              🎯 居中
+            </button>
+            <button
+              onClick={handleToggleFullscreen}
+              className="px-3 py-1.5 text-sm bg-gray-100/90 hover:bg-gray-100 shadow rounded transition-colors"
+            >
+              ✕ 关闭
+            </button>
+          </div>
+        )}
+        <div
+          ref={containerRef}
+          className="mindmap-container border border-gray-200 rounded-lg overflow-hidden"
+          style={{ width: '100%', height: isFullscreen ? 'calc(100vh - 60px)' : '500px' }}
+        />
+      </div>
 
       {/* 错误提示和备用显示 */}
       {mindMapError && (
@@ -735,8 +878,20 @@ function OutlineNode({ item, level = 0 }) {
   )
 }
 
+// 分支颜色调色板（学术风格，柔和且有区分度）
+const BRANCH_COLORS = [
+  '#6366f1', // 紫色 - 引言
+  '#8b5cf6', // 紫罗兰 - 相关工作
+  '#06b6d4', // 青色 - 方法
+  '#10b981', // 翠绿 - 实验
+  '#f59e0b', // 琥珀 - 讨论
+  '#ef4444', // 红色 - 结论
+  '#ec4899', // 粉色 - 其他
+  '#64748b', // 石板灰 - 备用
+]
+
 // 转换数据为 simple-mind-map 格式
-// 注意：直接传入 { data: {...}, children: [...] }，不需要 root 包装
+// 支持分支颜色编码和贝塞尔曲线
 function convertToSimpleMindMapData(items, paperTitle) {
   const isFlatStringList = items.length > 0 && typeof items[0] === 'string'
 
@@ -746,8 +901,11 @@ function convertToSimpleMindMapData(items, paperTitle) {
     // 智能解析扁平列表
     children = parseFlatOutlineToChildren(items)
   } else {
-    // 已经是嵌套对象格式
-    children = items.map(item => convertNodeToSimpleMindMap(item))
+    // 已经是嵌套对象格式，为每个顶级分支分配颜色
+    children = items.map((item, index) => {
+      const color = BRANCH_COLORS[index % BRANCH_COLORS.length]
+      return convertNodeToSimpleMindMap(item, color)
+    })
   }
 
   // 直接返回节点数据，不需要 root 包装
@@ -760,10 +918,12 @@ function convertToSimpleMindMapData(items, paperTitle) {
 }
 
 // 解析扁平列表为 simple-mind-map children 格式
+// 为每个主章节分配不同的颜色
 function parseFlatOutlineToChildren(items) {
   const mainChapters = []
   let currentChapter = null
   let currentSubChapter = null
+  let chapterIndex = 0
 
   items.forEach(item => {
     const text = typeof item === 'string' ? item : ''
@@ -782,7 +942,7 @@ function parseFlatOutlineToChildren(items) {
     const dashMatch = trimmedText.match(/^[-–—•·]\s*(.+)/)
 
     if (mainMatch && !subNumMatch) {
-      // 主章节
+      // 主章节 - 分配颜色
       if (currentSubChapter && currentChapter) {
         currentChapter.children.push(currentSubChapter)
         currentSubChapter = null
@@ -790,33 +950,42 @@ function parseFlatOutlineToChildren(items) {
       if (currentChapter) {
         mainChapters.push(currentChapter)
       }
+      const color = BRANCH_COLORS[chapterIndex % BRANCH_COLORS.length]
+      chapterIndex++
       currentChapter = {
-        data: { text: mainMatch[2].trim() },
-        children: []
+        data: { text: mainMatch[2].trim(), color: color },
+        children: [],
+        _branchColor: color // 保存颜色供子节点继承
       }
     } else if (subNumMatch) {
-      // 二级章节 (如 2.1)
+      // 二级章节 (如 2.1) - 继承父章节颜色
       if (currentSubChapter && currentChapter) {
         currentChapter.children.push(currentSubChapter)
       }
+      const branchColor = currentChapter?._branchColor || null
       currentSubChapter = {
-        data: { text: subNumMatch[3].trim() },
-        children: []
+        data: { text: subNumMatch[3].trim(), color: branchColor },
+        children: [],
+        _branchColor: branchColor
       }
     } else if (dashMatch && indentLevel > 0) {
-      // 带破折号的子章节
+      // 带破折号的子章节 - 继承颜色
       const subText = dashMatch[1].trim()
+      const branchColor = currentChapter?._branchColor || currentSubChapter?._branchColor || null
+      const node = { data: { text: subText, color: branchColor }, children: [] }
       if (currentSubChapter) {
-        currentSubChapter.children.push({ data: { text: subText }, children: [] })
+        currentSubChapter.children.push(node)
       } else if (currentChapter) {
-        currentChapter.children.push({ data: { text: subText }, children: [] })
+        currentChapter.children.push(node)
       }
     } else if (trimmedText && indentLevel > 0) {
-      // 其他缩进内容作为子节点
+      // 其他缩进内容作为子节点 - 继承颜色
+      const branchColor = currentChapter?._branchColor || currentSubChapter?._branchColor || null
+      const node = { data: { text: trimmedText, color: branchColor }, children: [] }
       if (currentSubChapter) {
-        currentSubChapter.children.push({ data: { text: trimmedText }, children: [] })
+        currentSubChapter.children.push(node)
       } else if (currentChapter) {
-        currentChapter.children.push({ data: { text: trimmedText }, children: [] })
+        currentChapter.children.push(node)
       }
     }
   })
@@ -829,19 +998,26 @@ function parseFlatOutlineToChildren(items) {
     mainChapters.push(currentChapter)
   }
 
-  return mainChapters.length > 0 ? mainChapters : items.map(s => ({
-    data: { text: typeof s === 'string' ? s.trim() : s },
+  // 清理临时属性
+  const cleanNode = (node) => {
+    const clean = { data: { ...node.data }, children: node.children.map(cleanNode) }
+    return clean
+  }
+
+  return mainChapters.length > 0 ? mainChapters.map(cleanNode) : items.map((s, i) => ({
+    data: { text: typeof s === 'string' ? s.trim() : s, color: BRANCH_COLORS[i % BRANCH_COLORS.length] },
     children: []
   }))
 }
 
 // 转换嵌套对象为 simple-mind-map 格式
-function convertNodeToSimpleMindMap(item) {
+// color 参数用于为整个分支着色（同一一级分支下的所有节点同色）
+function convertNodeToSimpleMindMap(item, branchColor = null) {
   if (typeof item === 'string') {
-    return { data: { text: item }, children: [] }
+    return { data: { text: item, color: branchColor }, children: [] }
   }
   return {
-    data: { text: item.title || '' },
-    children: (item.children || []).map(child => convertNodeToSimpleMindMap(child))
+    data: { text: item.title || '', color: branchColor },
+    children: (item.children || []).map(child => convertNodeToSimpleMindMap(child, branchColor))
   }
 }

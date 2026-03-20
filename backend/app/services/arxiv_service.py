@@ -92,6 +92,9 @@ class ArxivService:
             total_fetched = 0
             new_papers = 0
 
+            # 使用集合跟踪当前批次已处理的 arxiv_id
+            seen_ids_in_batch = set()
+
             # 处理结果
             for result in all_results:
                 total_fetched += 1
@@ -102,6 +105,11 @@ class ArxivService:
                 # 移除版本号 (如 v1)
                 if "v" in arxiv_id:
                     arxiv_id = arxiv_id.rsplit("v", 1)[0]
+
+                # 检查当前批次是否已处理过
+                if arxiv_id in seen_ids_in_batch:
+                    continue
+                seen_ids_in_batch.add(arxiv_id)
 
                 # 检查数据库是否已存在
                 stmt = select(Paper).where(Paper.arxiv_id == arxiv_id)
@@ -279,6 +287,9 @@ class ArxivService:
             filtered_papers = 0
             early_stop = False
 
+            # 使用集合跟踪当前批次已处理的 arxiv_id，避免同一批次重复插入
+            seen_ids_in_batch = set()
+
             for result in all_results:
                 total_fetched += 1
 
@@ -303,7 +314,13 @@ class ArxivService:
                 if "v" in arxiv_id:
                     arxiv_id = arxiv_id.rsplit("v", 1)[0]
 
-                # 检查是否已存在
+                # 检查当前批次是否已处理过（ArXiv 可能返回同一论文的多个版本）
+                if arxiv_id in seen_ids_in_batch:
+                    logger.debug(f"跳过重复版本: {arxiv_id}")
+                    continue
+                seen_ids_in_batch.add(arxiv_id)
+
+                # 检查是否已存在数据库中
                 stmt = select(Paper).where(Paper.arxiv_id == arxiv_id)
                 existing = await db.execute(stmt)
                 if existing.scalar_one_or_none() is not None:

@@ -209,10 +209,13 @@ class PDFService:
 
         logger.info(f"执行命令: {' '.join(cmd)}")
 
-        # 设置环境变量（HuggingFace 镜像）
+        # 设置环境变量（HuggingFace 镜像 + 禁用 ObjC 警告）
         import os
         env = os.environ.copy()
         env["HF_ENDPOINT"] = "https://hf-mirror.com"
+        # 禁用 FFmpeg 库冲突警告（cv2 和 av 版本不同导致）
+        env["OBJC_DISABLE_INITIALIZE_FORK_SAFETY"] = "YES"
+        env["NO_AT_BRIDGE"] = "1"
 
         try:
             # 异步执行子进程
@@ -223,17 +226,32 @@ class PDFService:
                 env=env,
             )
 
+            # 动态超时：根据文件大小调整（优先使用 MinerU，延长超时）
+            file_size_mb = pdf_path.stat().st_size / (1024 * 1024)
+            if file_size_mb < 2:
+                timeout = 600  # 小文件 10 分钟
+            elif file_size_mb < 5:
+                timeout = 900  # 中等文件 15 分钟
+            elif file_size_mb < 10:
+                timeout = 1500  # 较大文件 25 分钟
+            else:
+                timeout = 2400  # 大文件 40 分钟
+
             stdout, stderr = await asyncio.wait_for(
                 process.communicate(),
-                timeout=self.settings.mineru_timeout
+                timeout=timeout
             )
 
-            if process.returncode != 0:
-                error_msg = stderr.decode() if stderr else "Unknown error"
-                raise RuntimeError(f"MinerU 返回非零: {error_msg[:500]}")
-
-            # 查找输出的 Markdown 文件
+            # 检查输出文件（即使有警告也继续）
             md_files = list(output_dir.rglob("*.md"))
+
+            # 只有在真正失败且没有输出时才报错
+            if process.returncode != 0 and not md_files:
+                error_msg = stderr.decode() if stderr else "Unknown error"
+                # 忽略 FFmpeg 库冲突警告
+                if "AVFFrameReceiver" not in error_msg and "AVFAudioReceiver" not in error_msg:
+                    raise RuntimeError(f"MinerU 返回非零: {error_msg[:500]}")
+                logger.warning(f"MinerU 有警告但继续: {error_msg[:200]}")
             if not md_files:
                 raise RuntimeError("MinerU 未生成 Markdown 文件")
 
@@ -266,7 +284,7 @@ class PDFService:
             return md_content, metadata
 
         except asyncio.TimeoutError:
-            raise RuntimeError(f"MinerU 解析超时 ({self.settings.mineru_timeout}s)")
+            raise RuntimeError(f"MinerU 解析超时 ({timeout}s, 文件 {file_size_mb:.1f}MB)")
         except FileNotFoundError:
             raise RuntimeError(f"MinerU 未找到: {self.settings.mineru_path}")
 

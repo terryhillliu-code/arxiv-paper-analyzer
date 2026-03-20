@@ -99,6 +99,14 @@ class ObsidianClient:
         Returns:
             包含 md_path 和 pdf_path 的字典
         """
+        # 辅助函数：安全转换为字符串
+        def safe_str(val):
+            if val is None:
+                return ""
+            if hasattr(val, 'isoformat'):  # datetime 对象
+                return val.isoformat()
+            return str(val)
+
         # 方式1：使用字典参数
         if paper_data is not None:
             payload = {
@@ -106,7 +114,7 @@ class ObsidianClient:
                 "metadata": {
                     "title": paper_data.get("title", ""),
                     "source_url": paper_data.get("arxiv_url", ""),
-                    "date": paper_data.get("publish_date", ""),
+                    "date": safe_str(paper_data.get("publish_date", "")),
                     "tags": analysis_json.get("tags", []) if analysis_json else [],
                     "tier": analysis_json.get("tier", "B") if analysis_json else "B",
                     "methodology": analysis_json.get("methodology", "") if analysis_json else "",
