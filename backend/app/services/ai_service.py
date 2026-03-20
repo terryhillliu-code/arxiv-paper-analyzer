@@ -468,14 +468,25 @@ overall_rating: {analysis_json.get("overall_rating", "B")}
         if not text:
             return {}
 
-        # 策略 1: 从 ```json ... ``` 代码块中提取（优先处理）
-        # 使用更健壮的正则，支持多行和可选的 json 标签
+        # 预处理：移除 markdown 代码块标记
+        cleaned_text = text.strip()
+        if cleaned_text.startswith("```"):
+            # 移除开头的 ```json 或 ```
+            lines = cleaned_text.split("\n")
+            if lines[0].strip().startswith("```"):
+                lines = lines[1:]
+            # 移除结尾的 ```
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            cleaned_text = "\n".join(lines)
+
+        # 策略 1: 从清理后的文本中提取代码块
         json_block_patterns = [
             r"```json\s*([\s\S]*?)\s*```",  # ```json ... ```
             r"```\s*([\s\S]*?)\s*```",       # ``` ... ```
         ]
         for pattern in json_block_patterns:
-            matches = re.findall(pattern, text, re.DOTALL)
+            matches = re.findall(pattern, cleaned_text, re.DOTALL)
             for match in matches:
                 try:
                     result = json.loads(match.strip())
@@ -485,9 +496,9 @@ overall_rating: {analysis_json.get("overall_rating", "B")}
                     logger.debug(f"代码块 JSON 解析失败: {e}")
                     continue
 
-        # 策略 2: 直接解析
+        # 策略 2: 直接解析清理后的文本
         try:
-            result = json.loads(text.strip())
+            result = json.loads(cleaned_text.strip())
             if isinstance(result, dict):
                 return result
         except json.JSONDecodeError:
@@ -495,11 +506,11 @@ overall_rating: {analysis_json.get("overall_rating", "B")}
 
         # 策略 3: 从文本中找到第一个完整的 { ... } 对象
         # 使用栈匹配确保提取完整的 JSON 对象
-        start = text.find("{")
+        start = cleaned_text.find("{")
         if start != -1:
             brace_count = 0
             end = start
-            for i, char in enumerate(text[start:], start):
+            for i, char in enumerate(cleaned_text[start:], start):
                 if char == "{":
                     brace_count += 1
                 elif char == "}":
@@ -509,19 +520,19 @@ overall_rating: {analysis_json.get("overall_rating", "B")}
                         break
             if end > start:
                 try:
-                    result = json.loads(text[start:end])
+                    result = json.loads(cleaned_text[start:end])
                     if isinstance(result, dict):
                         return result
                 except json.JSONDecodeError:
                     pass
 
         # 策略 4: 尝试修复常见的 JSON 格式问题
-        cleaned = re.sub(r"//.*?\n", "", text)  # 移除单行注释
-        cleaned = re.sub(r"/\*.*?\*/", "", cleaned, flags=re.DOTALL)  # 移除多行注释
-        cleaned = re.sub(r",\s*}", "}", cleaned)  # 移除尾随逗号
-        cleaned = re.sub(r",\s*]", "]", cleaned)
+        repaired = re.sub(r"//.*?\n", "", cleaned_text)  # 移除单行注释
+        repaired = re.sub(r"/\*.*?\*/", "", repaired, flags=re.DOTALL)  # 移除多行注释
+        repaired = re.sub(r",\s*}", "}", repaired)  # 移除尾随逗号
+        repaired = re.sub(r",\s*]", "]", repaired)
         try:
-            result = json.loads(cleaned)
+            result = json.loads(repaired)
             if isinstance(result, dict):
                 return result
         except json.JSONDecodeError:
