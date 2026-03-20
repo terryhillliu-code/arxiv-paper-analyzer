@@ -37,6 +37,7 @@ class AnalysisTaskHandler:
         paper_id = payload.get("paper_id")
         use_mineru = payload.get("use_mineru", False)
         force_refresh = payload.get("force_refresh", False)
+        quick_mode = payload.get("quick_mode", False)  # 快速模式：只用摘要
 
         if not paper_id:
             raise ValueError("缺少 paper_id")
@@ -73,14 +74,21 @@ class AnalysisTaskHandler:
             paper_tags = paper.tags
 
         # ========== 阶段2: 获取内容 ==========
-        queue.update_task(task.id, progress=10, message="准备 PDF...")
+        queue.update_task(task.id, progress=10, message="准备内容...")
 
         content = paper_full_text
         content_metadata = {}
 
-        # 如果没有全文，下载 PDF 并解析
-        if not content and paper_pdf_url and paper_arxiv_id:
+        # 快速模式：直接使用摘要
+        if quick_mode:
+            logger.info(f"快速模式: 使用摘要分析 {paper_arxiv_id}")
+            content = paper_abstract
+            if not content:
+                content = paper_full_text  # 回退到全文
+        # 常规模式：下载 PDF 并解析
+        elif not content and paper_pdf_url and paper_arxiv_id:
             try:
+                logger.info(f"下载 PDF: {paper_arxiv_id}")
                 pdf_path = await pdf_service.download_pdf(
                     pdf_url=paper_pdf_url,
                     arxiv_id=paper_arxiv_id,
@@ -93,11 +101,12 @@ class AnalysisTaskHandler:
                     logger.info(f"使用 MinerU 深度解析: {paper_arxiv_id}")
                     content, content_metadata = await pdf_service.extract_markdown(pdf_path)
                 else:
-                    logger.info(f"使用 PyMuPDF 快速提取: {paper_arxiv_id}")
+                    logger.info(f"使用 PyMuPDF 提取: {paper_arxiv_id}")
                     content = await PDFService.get_paper_text(
                         pdf_url=paper_pdf_url,
                         arxiv_id=paper_arxiv_id,
                     )
+                    logger.info(f"提取完成: {len(content)} 字符")
 
             except Exception as e:
                 logger.warning(f"PDF 解析失败，使用摘要: {e}")
@@ -112,6 +121,7 @@ class AnalysisTaskHandler:
 
         # ========== 阶段3: AI 分析（可并行） ==========
         queue.update_task(task.id, progress=30, message="生成深度分析报告...")
+        logger.info(f"开始 AI 分析: {paper_arxiv_id}")
 
         analysis_result = await ai_service.generate_deep_analysis(
             title=paper_title,
@@ -122,6 +132,7 @@ class AnalysisTaskHandler:
             arxiv_url=paper_arxiv_url,
             pdf_url=paper_pdf_url,
             content=content,
+            quick_mode=quick_mode,  # 传递快速模式参数
         )
 
         queue.update_task(task.id, progress=80, message="保存分析结果...")

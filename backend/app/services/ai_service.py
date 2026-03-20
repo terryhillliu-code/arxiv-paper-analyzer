@@ -172,6 +172,7 @@ class AIService:
         arxiv_url: str,
         pdf_url: str,
         content: str,
+        quick_mode: bool = False,
     ) -> Dict[str, Any]:
         """生成论文深度分析报告。
 
@@ -209,12 +210,65 @@ class AIService:
 
             # 调用 AI API (在线程池中运行，避免阻塞事件循环)
             logger.info(f"开始生成深度分析: {title[:30]}...")
-            report = await asyncio.to_thread(self._call_api, prompt, max_tokens=self.max_tokens)
+            # 快速模式使用更少的 token
+            max_tokens = 4000 if quick_mode else self.max_tokens
+            report = await asyncio.to_thread(self._call_api, prompt, max_tokens=max_tokens)
 
             logger.info(f"深度分析报告生成成功: {len(report)} 字符")
 
-            # 提取结构化数据
-            analysis_json = await self._extract_analysis_json(report)
+            # 快速模式：用 glm-5 异步提取 JSON（带重试）
+            if quick_mode:
+                from openai import OpenAI as OpenAIClient
+                settings = get_settings()
+
+                try:
+                    quick_model = "glm-5"
+                    quick_client = OpenAIClient(
+                        api_key=settings.coding_plan_api_key,
+                        base_url="https://coding.dashscope.aliyuncs.com/v1",
+                    )
+                    prompt_json = ANALYSIS_JSON_PROMPT.format(report=report)
+
+                    # 重试机制：最多 3 次
+                    MAX_RETRIES = 3
+                    analysis_json = {}
+                    for attempt in range(MAX_RETRIES):
+                        def _sync_json_call():
+                            return quick_client.chat.completions.create(
+                                model=quick_model,
+                                messages=[{"role": "user", "content": prompt_json}],
+                                max_tokens=4096,
+                            )
+
+                        response = await asyncio.to_thread(_sync_json_call)
+                        response_text = response.choices[0].message.content or ""
+                        analysis_json = self._parse_json(response_text)
+
+                        # 验证关键字段
+                        is_valid, missing = self.validate_analysis_json(analysis_json)
+                        if is_valid:
+                            break
+                        logger.warning(f"JSON 验证失败 (尝试 {attempt+1}/{MAX_RETRIES})，缺失: {missing}")
+
+                    # 补充默认值
+                    DEFAULT_VALUES = {
+                        "one_line_summary": "", "outline": [], "key_contributions": [],
+                        "strengths": [], "weaknesses": [], "methodology": "",
+                        "datasets": [], "metrics": [], "future_directions": [],
+                        "overall_rating": "B", "recommendation": "",
+                        "related_work": {"key_references": [], "similar_papers": []},
+                        "action_items": [], "knowledge_links": [], "tier": "B", "tags": [],
+                    }
+                    for key, default in DEFAULT_VALUES.items():
+                        if key not in analysis_json:
+                            analysis_json[key] = default
+                    logger.info(f"快速模式: JSON提取完成 tier={analysis_json.get('tier', 'B')}")
+                except Exception as e:
+                    logger.warning(f"JSON提取失败: {e}")
+                    analysis_json = {"tier": "B", "tags": [], "one_line_summary": "", "outline": []}
+            else:
+                # 提取结构化数据
+                analysis_json = await self._extract_analysis_json(report)
 
             # === 新增：生成 Markdown 输出 ===
             md_output = self._generate_markdown_output(
@@ -453,6 +507,46 @@ overall_rating: {analysis_json.get("overall_rating", "B")}
 
         return True
 
+    def _quick_extract_json(self, report: str, title: str, categories: List[str]) -> Dict[str, Any]:
+        """快速提取 JSON（无需二次 AI 调用）。
+
+        使用正则从报告中提取基本信息。
+        """
+        # 尝试从报告中直接提取 JSON（如果有）
+        import re
+
+        # 默认值
+        result = {
+            "one_line_summary": "",
+            "tier": "B",
+            "tags": [],
+            "key_contributions": [],
+            "outline": [],
+        }
+
+        # 尝试提取一句话总结
+        summary_match = re.search(r'(?:一句话总结|One-line Summary)[:：]\s*(.+?)(?:\n|$)', report)
+        if summary_match:
+            result["one_line_summary"] = summary_match.group(1).strip()
+
+        # 尝试提取 tier
+        tier_match = re.search(r'(?:内容等级|Tier)[:：]\s*([ABC])', report)
+        if tier_match:
+            result["tier"] = tier_match.group(1)
+
+        # 根据 categories 推断 tags
+        category_tags = {
+            "cs.CV": "计算机视觉",
+            "cs.LG": "机器学习",
+            "cs.CL": "自然语言处理",
+            "cs.AI": "人工智能",
+            "cs.RO": "机器人",
+            "cs.NE": "神经网络",
+        }
+        result["tags"] = [category_tags.get(c, c) for c in (categories or [])][:3]
+
+        return result
+
     @staticmethod
     def _parse_json(text: str) -> Dict[str, Any]:
         """多策略 JSON 解析。
@@ -541,6 +635,30 @@ overall_rating: {analysis_json.get("overall_rating", "B")}
         # 都失败则返回空字典
         logger.warning(f"JSON 解析失败，返回空字典。原始文本前 500 字符:\n{text[:500]}")
         return {}
+
+    @staticmethod
+    def validate_analysis_json(analysis_json: Dict[str, Any]) -> tuple[bool, List[str]]:
+        """验证分析 JSON 是否包含必要字段。
+
+        Args:
+            analysis_json: 待验证的 JSON 字典
+
+        Returns:
+            (是否有效, 缺失字段列表)
+        """
+        REQUIRED_FIELDS = ["tags", "one_line_summary", "tier"]
+
+        missing = []
+        for field in REQUIRED_FIELDS:
+            value = analysis_json.get(field)
+            if not value:
+                missing.append(field)
+            elif field == "tags" and isinstance(value, list) and len(value) == 0:
+                missing.append(field)
+            elif field == "one_line_summary" and isinstance(value, str) and value.strip() == "":
+                missing.append(field)
+
+        return len(missing) == 0, missing
 
 
 # 全局实例
