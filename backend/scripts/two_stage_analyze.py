@@ -30,14 +30,23 @@ from app.services.ai_service import ai_service
 from app.outputs.markdown_generator import MarkdownGenerator
 
 
-async def get_unanalyzed_papers():
-    """获取未分析的论文"""
+async def get_unanalyzed_papers(sort_by_citations: bool = True):
+    """获取未分析的论文
+
+    Args:
+        sort_by_citations: 是否按引用数排序（优先分析高影响力论文）
+    """
     async with async_session_maker() as db:
-        result = await db.execute(
-            select(Paper)
-            .where(Paper.has_analysis == False)
-            .order_by(Paper.publish_date.desc())
-        )
+        query = select(Paper).where(Paper.has_analysis == False)
+
+        if sort_by_citations:
+            # 按引用数降序，优先分析高影响力论文
+            query = query.order_by(Paper.citation_count.desc().nulls_last())
+        else:
+            # 按发布日期降序
+            query = query.order_by(Paper.publish_date.desc())
+
+        result = await db.execute(query)
         return result.scalars().all()
 
 
@@ -172,6 +181,9 @@ async def main():
     parser.add_argument("--parallel", type=int, default=4, help="并发数")
     parser.add_argument("--skip-quick", action="store_true", help="跳过阶段1（已快速分析）")
     parser.add_argument("--tier-a-only", action="store_true", help="仅处理 Tier A")
+    parser.add_argument("--top-n", type=int, default=0, help="只分析 Top N 篇高引用论文 (0=全部)")
+    parser.add_argument("--min-citations", type=int, default=0, help="只分析引用数 >= N 的论文")
+    parser.add_argument("--no-sort-citations", action="store_true", help="不按引用数排序，按日期排序")
     args = parser.parse_args()
 
     logger.info("=" * 60)
@@ -182,8 +194,27 @@ async def main():
 
     # ========== 阶段1：快速模式评估所有论文 ==========
     if not args.skip_quick and not args.tier_a_only:
-        papers = await get_unanalyzed_papers()
+        papers = await get_unanalyzed_papers(sort_by_citations=not args.no_sort_citations)
+
+        # 应用引用数过滤
+        if args.min_citations > 0:
+            papers = [p for p in papers if (p.citation_count or 0) >= args.min_citations]
+            logger.info(f"引用数 >= {args.min_citations} 的论文: {len(papers)} 篇")
+
+        # 应用 Top N 限制
+        if args.top_n > 0:
+            papers = papers[:args.top_n]
+            logger.info(f"限制分析 Top {args.top_n} 篇")
+
         logger.info(f"\n【阶段1】快速模式评估: {len(papers)} 篇")
+
+        if papers:
+            # 显示前 5 篇的引用数（验证排序）
+            if not args.no_sort_citations:
+                logger.info("引用数 Top 5:")
+                for i, p in enumerate(papers[:5]):
+                    citations = p.citation_count or "N/A"
+                    logger.info(f"  {i+1}. [{citations} citations] {p.title[:50]}...")
 
         if papers:
             start = time.time()
