@@ -144,6 +144,7 @@ async def analyze_by_citations(top_n: int = 0, min_citations: int = 0, parallel:
                     pdf_url=paper.pdf_url or "",
                     content=paper.abstract or "",
                     quick_mode=True,
+                    citation_count=paper.citation_count,
                 )
 
                 report = result.get("report", "")

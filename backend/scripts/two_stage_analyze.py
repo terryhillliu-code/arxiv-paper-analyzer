@@ -92,6 +92,7 @@ async def quick_analyze(paper, semaphore):
                 pdf_url=paper.pdf_url or "",
                 content=paper.abstract or "",
                 quick_mode=True,
+                citation_count=paper.citation_count,
             )
 
             report = result.get("report", "")
@@ -148,6 +149,7 @@ async def full_analyze(paper, semaphore):
                 pdf_url=paper.pdf_url or "",
                 content=content,
                 quick_mode=False,  # 完整模式
+                citation_count=paper.citation_count,
             )
 
             report = result.get("report", "")

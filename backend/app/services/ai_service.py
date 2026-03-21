@@ -173,6 +173,7 @@ class AIService:
         pdf_url: str,
         content: str,
         quick_mode: bool = False,
+        citation_count: Optional[int] = None,
     ) -> Dict[str, Any]:
         """生成论文深度分析报告。
 
@@ -185,6 +186,8 @@ class AIService:
             arxiv_url: arXiv 链接
             pdf_url: PDF 链接
             content: 论文全文内容
+            quick_mode: 是否快速模式
+            citation_count: 引用数（用于 tier 评估）
 
         Returns:
             包含 report 和 analysis_json 的字典
@@ -227,7 +230,12 @@ class AIService:
                         api_key=settings.coding_plan_api_key,
                         base_url="https://coding.dashscope.aliyuncs.com/v1",
                     )
-                    prompt_json = ANALYSIS_JSON_PROMPT.format(report=report)
+                    prompt_json = ANALYSIS_JSON_PROMPT.format(
+                        report=report,
+                        citation_count=citation_count if citation_count else "未知（新论文）",
+                        institutions=", ".join(institutions) if institutions else "未知",
+                        publish_date=publish_date or "未知",
+                    )
 
                     # 重试机制：最多 3 次
                     MAX_RETRIES = 3
@@ -268,7 +276,12 @@ class AIService:
                     analysis_json = {"tier": "B", "tags": [], "one_line_summary": "", "outline": []}
             else:
                 # 提取结构化数据
-                analysis_json = await self._extract_analysis_json(report)
+                analysis_json = await self._extract_analysis_json(
+                    report,
+                    institutions=institutions,
+                    publish_date=publish_date,
+                    citation_count=citation_count,
+                )
 
             # === 新增：生成 Markdown 输出 ===
             md_output = self._generate_markdown_output(
@@ -296,11 +309,20 @@ class AIService:
                 "analysis_json": {},
             }
 
-    async def _extract_analysis_json(self, report: str) -> Dict[str, Any]:
+    async def _extract_analysis_json(
+        self,
+        report: str,
+        institutions: List[str] = None,
+        publish_date: str = None,
+        citation_count: int = None,
+    ) -> Dict[str, Any]:
         """从分析报告中提取结构化数据。
 
         Args:
             report: Markdown 格式的分析报告
+            institutions: 机构列表（用于 tier 评估）
+            publish_date: 发布日期（用于 tier 评估）
+            citation_count: 引用数（用于 tier 评估）
 
         Returns:
             结构化的分析数据字典，确保关键字段存在
@@ -327,7 +349,12 @@ class AIService:
 
         try:
             # 格式化提示词
-            prompt = ANALYSIS_JSON_PROMPT.format(report=report)
+            prompt = ANALYSIS_JSON_PROMPT.format(
+                report=report,
+                citation_count=citation_count if citation_count else "未知（新论文）",
+                institutions=", ".join(institutions) if institutions else "未知",
+                publish_date=publish_date or "未知",
+            )
 
             # 调用 AI API（增加 token 限制以容纳完整 JSON）(在线程池中运行)
             response_text = await asyncio.to_thread(self._call_api, prompt, max_tokens=4096)
