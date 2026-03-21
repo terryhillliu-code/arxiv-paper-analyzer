@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from app.database import async_session_maker
 from app.services.ai_service import ai_service
 from app.services.arxiv_service import ArxivService
+from app.services.s2_service import get_s2_service
 from sqlalchemy import select, or_
 from app.models import Paper
 
@@ -203,6 +204,67 @@ class ScheduledFetcher:
 
         raise Exception(f"摘要生成失败，已重试 {self.max_retries} 次: {last_error}")
 
+    async def fetch_s2_metrics(self, limit: int = 100) -> dict:
+        """获取论文的 Semantic Scholar 评分。
+
+        Args:
+            limit: 每次处理的最大论文数（默认 100）
+
+        Returns:
+            处理结果统计
+        """
+        logger.info("开始获取 Semantic Scholar 评分...")
+
+        async with async_session_maker() as db:
+            # 查询没有评分的论文
+            query = (
+                select(Paper)
+                .where(Paper.arxiv_id != None)
+                .where(or_(Paper.citation_count == None, Paper.influential_citation_count == None))
+                .limit(limit)
+            )
+            result = await db.execute(query)
+            papers = result.scalars().all()
+
+            if not papers:
+                logger.info("没有需要获取评分的论文")
+                return {"processed": 0, "updated": 0, "not_found": 0}
+
+            logger.info(f"找到 {len(papers)} 篇论文需要获取评分")
+
+            # 提取 arxiv_ids
+            arxiv_ids = [p.arxiv_id for p in papers]
+
+            # 批量获取评分
+            s2_service = get_s2_service()
+            metrics = await s2_service.batch_get_metrics(arxiv_ids)
+
+            updated_count = 0
+            not_found_count = 0
+
+            for paper in papers:
+                if paper.arxiv_id in metrics:
+                    m = metrics[paper.arxiv_id]
+                    paper.citation_count = m.get("citation_count", 0)
+                    paper.influential_citation_count = m.get("influential_citation_count", 0)
+                    paper.s2_paper_id = m.get("s2_paper_id")
+                    updated_count += 1
+                else:
+                    not_found_count += 1
+
+            await db.commit()
+
+        logger.info(
+            f"Semantic Scholar 评分获取完成: "
+            f"处理 {len(papers)} 篇, 更新 {updated_count} 篇, 未找到 {not_found_count} 篇"
+        )
+
+        return {
+            "processed": len(papers),
+            "updated": updated_count,
+            "not_found": not_found_count,
+        }
+
     async def run(
         self,
         date_from: Optional[datetime] = None,
@@ -246,6 +308,7 @@ class ScheduledFetcher:
         results = {
             "fetch": None,
             "summary": None,
+            "s2_metrics": None,
             "errors": [],
         }
 
@@ -258,7 +321,13 @@ class ScheduledFetcher:
             fetch_result = await self.fetch_papers_with_retry(date_from, date_to)
             results["fetch"] = fetch_result
 
-            # 2. 生成 AI 摘要
+            # 2. 获取 Semantic Scholar 评分
+            if fetch_result.get("new_papers", 0) > 0:
+                logger.info("开始获取 Semantic Scholar 评分...")
+                s2_result = await self.fetch_s2_metrics(limit=200)
+                results["s2_metrics"] = s2_result
+
+            # 3. 生成 AI 摘要
             if not skip_ai and fetch_result.get("new_papers", 0) > 0:
                 logger.info("开始生成 AI 摘要...")
                 summary_result = await self.generate_summaries_with_retry()

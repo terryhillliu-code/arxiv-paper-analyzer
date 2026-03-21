@@ -109,6 +109,11 @@ class Paper(DeclarativeBase):
         "popularity_score", Float, default=0.0, nullable=False
     )
 
+    # === Semantic Scholar 评分字段 ===
+    citation_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    influential_citation_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    s2_paper_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+
     def __repr__(self) -> str:
         return f"<Paper(id={self.id}, arxiv_id={self.arxiv_id}, title={self.title[:30]}...)>"
 

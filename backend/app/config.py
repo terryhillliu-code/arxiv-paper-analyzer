@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     dashscope_api_key: str = ""  # 阿里百炼 API Key
     coding_plan_api_key: str = ""  # Coding Plan API Key
+    semantic_scholar_api_key: str = ""  # Semantic Scholar API Key (可选，提高限额)
 
     # 数据库配置
     database_url: str = "sqlite+aiosqlite:///./data/papers.db"
