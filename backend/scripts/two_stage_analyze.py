@@ -118,13 +118,13 @@ async def full_analyze(paper, semaphore):
         try:
             # 下载 PDF 并提取文本
             from app.services.pdf_service import PDFService
-            pdf_service = PDFService()
 
             if not paper.pdf_url:
                 logger.warning(f"论文 {paper.id} 无 PDF URL，跳过完整分析")
                 return False
 
-            content = await pdf_service.extract_text(paper.pdf_url)
+            # 使用 get_paper_text 下载 PDF 并提取文本
+            content = await PDFService.get_paper_text(paper.pdf_url, paper.arxiv_id or str(paper.id))
             if not content:
                 logger.warning(f"论文 {paper.id} PDF 提取失败")
                 return False
