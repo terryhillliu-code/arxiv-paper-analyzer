@@ -193,6 +193,17 @@ class AIService:
             包含 report 和 analysis_json 的字典
         """
         try:
+            # 判断是否是新论文（三个月内）
+            from datetime import datetime, timedelta
+            is_new_paper = False
+            if publish_date and publish_date != "未知":
+                try:
+                    pub_dt = datetime.fromisoformat(publish_date.replace('Z', '+00:00').replace('+00:00', ''))
+                    if (datetime.now(pub_dt.tzinfo) - pub_dt) < timedelta(days=90):
+                        is_new_paper = True
+                except:
+                    pass
+
             # 如果内容超过 60000 字符则截断
             max_content_length = 60000
             if len(content) > max_content_length:
@@ -235,6 +246,7 @@ class AIService:
                         citation_count=citation_count if citation_count else "未知（新论文）",
                         institutions=", ".join(institutions) if institutions else "未知",
                         publish_date=publish_date or "未知",
+                        is_new_paper="是（忽略引用数维度）" if is_new_paper else "否",
                     )
 
                     # 重试机制：最多 3 次
@@ -281,6 +293,7 @@ class AIService:
                     institutions=institutions,
                     publish_date=publish_date,
                     citation_count=citation_count,
+                    is_new_paper=is_new_paper,
                 )
 
             # === 新增：生成 Markdown 输出 ===
@@ -315,6 +328,7 @@ class AIService:
         institutions: List[str] = None,
         publish_date: str = None,
         citation_count: int = None,
+        is_new_paper: bool = False,
     ) -> Dict[str, Any]:
         """从分析报告中提取结构化数据。
 
@@ -323,6 +337,7 @@ class AIService:
             institutions: 机构列表（用于 tier 评估）
             publish_date: 发布日期（用于 tier 评估）
             citation_count: 引用数（用于 tier 评估）
+            is_new_paper: 是否是新论文（三个月内）
 
         Returns:
             结构化的分析数据字典，确保关键字段存在
@@ -354,6 +369,7 @@ class AIService:
                 citation_count=citation_count if citation_count else "未知（新论文）",
                 institutions=", ".join(institutions) if institutions else "未知",
                 publish_date=publish_date or "未知",
+                is_new_paper="是（忽略引用数维度）" if is_new_paper else "否",
             )
 
             # 调用 AI API（增加 token 限制以容纳完整 JSON）(在线程池中运行)

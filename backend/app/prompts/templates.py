@@ -225,6 +225,9 @@ ANALYSIS_JSON_PROMPT = """你是一位学术论文信息提取专家。请从以
 - **引用数**：{citation_count}
 - **机构**：{institutions}
 - **发布日期**：{publish_date}
+- **是否新论文**：{is_new_paper}
+
+**注意**：如果是新论文（发布于三个月内），忽略引用数维度，主要依据创新性和机构热度评估。
 
 ## 分析报告
 

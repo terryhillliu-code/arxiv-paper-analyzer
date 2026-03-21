@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 from app.database import async_session_maker
 from app.models import Paper
 from sqlalchemy import select, func, update
-from app.services.ai_service import ai_service
+from app.config import get_settings
 
 
 TIER_PROMPT = """你是一位学术论文评审专家。请根据以下标准重新评估论文的 tier 等级。
@@ -79,15 +79,15 @@ async def check_stats():
         total_count = total.scalar()
 
         # Tier 分布
-        tier_a = await db.execute(select(func.count(Paper.id)).where(Paper.has_analysis == True, Paper.tier == 'A'))
-        tier_b = await db.execute(select(func.count(Paper.id)).where(Paper.has_analysis == True, Paper.tier == 'B'))
-        tier_c = await db.execute(select(func.count(Paper.id)).where(Paper.has_analysis == True, Paper.tier == 'C'))
+        tier_a = (await db.execute(select(func.count(Paper.id)).where(Paper.has_analysis == True, Paper.tier == 'A'))).scalar()
+        tier_b = (await db.execute(select(func.count(Paper.id)).where(Paper.has_analysis == True, Paper.tier == 'B'))).scalar()
+        tier_c = (await db.execute(select(func.count(Paper.id)).where(Paper.has_analysis == True, Paper.tier == 'C'))).scalar()
 
         print(f"已分析论文总数: {total_count}")
         print(f"\n当前 Tier 分布:")
-        print(f"  A: {tier_a.scalar()} ({tier_a.scalar()/total_count*100:.1f}%) - 预期 10-15%")
-        print(f"  B: {tier_b.scalar()} ({tier_b.scalar()/total_count*100:.1f}%) - 预期 50-60%")
-        print(f"  C: {tier_c.scalar()} ({tier_c.scalar()/total_count*100:.1f}%) - 预期 25-35%")
+        print(f"  A: {tier_a} ({tier_a/total_count*100:.1f}%) - 预期 10-15%")
+        print(f"  B: {tier_b} ({tier_b/total_count*100:.1f}%) - 预期 50-60%")
+        print(f"  C: {tier_c} ({tier_c/total_count*100:.1f}%) - 预期 25-35%")
 
 
 async def reevaluate_tier(parallel: int = 4, min_citations: int = 0):
@@ -115,15 +115,26 @@ async def reevaluate_tier(parallel: int = 4, min_citations: int = 0):
                     citation_count=paper.citation_count or "未知"
                 )
 
-                response = await ai_service.quick_client.chat.completions.create(
-                    model="glm-5",
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=100,
-                    temperature=0.3,
+                # 使用 AIService 的 _call_api 方法
+                settings = get_settings()
+                from openai import OpenAI
+                client = OpenAI(
+                    api_key=settings.coding_plan_api_key,
+                    base_url="https://coding.dashscope.aliyuncs.com/v1",
                 )
 
-                import json
+                def _sync_call():
+                    return client.chat.completions.create(
+                        model="glm-5",
+                        messages=[{"role": "user", "content": prompt}],
+                        max_tokens=100,
+                        temperature=0.3,
+                    )
+
+                response = await asyncio.to_thread(_sync_call)
                 result_text = response.choices[0].message.content.strip()
+
+                import json
                 # 提取 JSON
                 if '{' in result_text:
                     result_text = result_text[result_text.find('{'):result_text.rfind('}')+1]
