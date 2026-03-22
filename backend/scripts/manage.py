@@ -15,6 +15,9 @@ import subprocess
 from pathlib import Path
 from typing import List, Optional, Set
 
+# 模糊匹配库
+from fuzzywuzzy import fuzz
+
 # 添加项目根目录到路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -188,11 +191,12 @@ async def cmd_sync_scores(args):
 
 
 async def cmd_export_notebook(args):
-    """处理 export-notebook 子命令 (v2.1: 增加 ArXiv 全时域搜索补漏)"""
+    """处理 export-notebook 子命令 (v2.2: 增加模糊匹配加固)"""
     from app.services.knowledge_bridge import KnowledgeBridgeService
     from app.services.arxiv_service import ArxivService
 
     bridge = KnowledgeBridgeService()
+    FUZZY_THRESHOLD = 85  # 模糊匹配阈值
 
     # 获取 RAG 语义匹配的标题/ID (如果提供了 query)
     rag_titles: Set[str] = set()
@@ -202,7 +206,6 @@ async def cmd_export_notebook(args):
             rag_venv = "/Users/liufang/zhiwei-rag/venv/bin/python3"
             bridge_script = "/Users/liufang/zhiwei-rag/bridge.py"
 
-            # 使用 retrieve 命令获取 JSON 结果
             result = subprocess.run(
                 [rag_venv, bridge_script, "retrieve", args.query, "--top-k", "20"],
                 capture_output=True, text=True, timeout=30
@@ -244,11 +247,48 @@ async def cmd_export_notebook(args):
 
             query = query.where(or_(*conditions))
 
-        if args.limit > 0:
-            query = query.limit(args.limit)
+        # 扩大搜索范围，后续用模糊匹配过滤
+        query = query.limit(args.limit * 3 if args.limit > 0 else 30)
 
         result = await db.execute(query)
-        papers = list(result.scalars().all())
+        candidate_papers = list(result.scalars().all())
+
+    # ===== v2.2 新增: 模糊匹配过滤 =====
+    papers = []
+    if args.query and rag_titles:
+        logger.info(f"🔧 对 {len(candidate_papers)} 个候选进行模糊匹配 (阈值: {FUZZY_THRESHOLD})...")
+
+        for paper in candidate_papers:
+            paper_title = paper.title.lower()
+            matched = False
+
+            # 对每个 RAG 召回的标题进行模糊匹配
+            for rag_title in rag_titles:
+                rag_title_lower = rag_title.lower()
+
+                # 使用 token_sort_ratio 处理空格/连字符差异
+                # 例如 "Mixture of Depths" vs "Mixture-of-Depths"
+                ratio = fuzz.token_sort_ratio(paper_title, rag_title_lower)
+
+                if ratio >= FUZZY_THRESHOLD:
+                    logger.info(f"  ✅ 模糊匹配: '{paper.title[:40]}' ↔ '{rag_title[:40]}' ({ratio}%)")
+                    matched = True
+                    break
+
+            if matched:
+                papers.append(paper)
+
+        # 如果模糊匹配结果不足，补充直接匹配的结果
+        if len(papers) < (args.limit if args.limit > 0 else 10):
+            for paper in candidate_papers:
+                if paper not in papers:
+                    papers.append(paper)
+                    if args.limit > 0 and len(papers) >= args.limit:
+                        break
+
+        logger.info(f"📊 模糊匹配后: {len(papers)} 篇")
+    else:
+        papers = candidate_papers[:args.limit] if args.limit > 0 else candidate_papers
 
     # ===== v2.1 新增: ArXiv 全时域搜索补漏 =====
     min_papers = 3  # 最少期望论文数
