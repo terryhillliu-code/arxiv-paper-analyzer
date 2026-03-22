@@ -198,6 +198,132 @@ class ArxivService:
         return await ArxivService.fetch_papers(db, query, max_results)
 
     @staticmethod
+    async def fetch_by_relevance(
+        db: AsyncSession,
+        query: str,
+        max_results: int = 10,
+    ) -> dict:
+        """按相关度排序搜索论文（无日期限制）。
+
+        用于 NotebookLM 2.0 扩展搜索，打破本地库限制。
+
+        Args:
+            db: 异步数据库会话
+            query: 搜索关键词或短语
+            max_results: 最大返回数量
+
+        Returns:
+            抓取结果字典，包含：
+            - total_fetched: 总抓取数量
+            - new_papers: 新增论文数量
+            - papers: 新增论文对象列表
+            - message: 结果消息
+        """
+        fetch_log = FetchLog(
+            query=f"(relevance) {query}",
+            total_fetched=0,
+            new_papers=0,
+            fetch_time=datetime.now(),
+            status="pending",
+        )
+
+        try:
+            client = arxiv.Client()
+
+            # 使用相关度排序，不设日期限制
+            search = arxiv.Search(
+                query=query,
+                max_results=max_results,
+                sort_by=arxiv.SortCriterion.Relevance,
+            )
+
+            def _fetch_sync():
+                results = []
+                for result in client.results(search):
+                    results.append(result)
+                return results
+
+            all_results = await asyncio.to_thread(_fetch_sync)
+
+            total_fetched = 0
+            new_papers = 0
+            new_paper_objects = []
+            seen_ids_in_batch = set()
+
+            for result in all_results:
+                total_fetched += 1
+
+                # 解析 arxiv_id
+                arxiv_id = result.entry_id.split("/")[-1]
+                if "v" in arxiv_id:
+                    arxiv_id = arxiv_id.rsplit("v", 1)[0]
+
+                if arxiv_id in seen_ids_in_batch:
+                    continue
+                seen_ids_in_batch.add(arxiv_id)
+
+                # 检查数据库是否已存在
+                stmt = select(Paper).where(Paper.arxiv_id == arxiv_id)
+                existing = await db.execute(stmt)
+                if existing.scalar_one_or_none() is not None:
+                    continue
+
+                # 创建 Paper 对象
+                authors = [author.name for author in result.authors]
+                categories_list = [cat for cat in result.categories]
+
+                paper = Paper(
+                    arxiv_id=arxiv_id,
+                    title=result.title.strip(),
+                    authors=authors,
+                    abstract=result.summary.strip() if result.summary else None,
+                    categories=categories_list,
+                    publish_date=result.published,
+                    pdf_url=result.pdf_url,
+                    arxiv_url=result.entry_id,
+                )
+
+                db.add(paper)
+                new_papers += 1
+                new_paper_objects.append(paper)
+
+            await db.commit()
+
+            # 更新日志
+            fetch_log.total_fetched = total_fetched
+            fetch_log.new_papers = new_papers
+            fetch_log.status = "success"
+            db.add(fetch_log)
+            await db.commit()
+
+            message = f"相关度搜索找到 {total_fetched} 篇，新增 {new_papers} 篇"
+            logger.info(message)
+
+            return {
+                "total_fetched": total_fetched,
+                "new_papers": new_papers,
+                "papers": new_paper_objects,
+                "message": message,
+            }
+
+        except Exception as e:
+            await db.rollback()
+            error_msg = f"相关度搜索失败: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+
+            fetch_log.status = "failed"
+            fetch_log.error_message = error_msg
+            db.add(fetch_log)
+            await db.commit()
+
+            return {
+                "total_fetched": 0,
+                "new_papers": 0,
+                "papers": [],
+                "message": error_msg,
+            }
+
+    @staticmethod
     async def fetch_by_keywords(
         db: AsyncSession,
         keywords: List[str],

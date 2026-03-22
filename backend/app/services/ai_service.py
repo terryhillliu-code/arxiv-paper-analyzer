@@ -22,6 +22,7 @@ from app.prompts.templates import (
     DEEP_ANALYSIS_PROMPT,
     PREDEFINED_TAGS,
     SUMMARY_PROMPT,
+    TIER_REEVALUATION_PROMPT,
 )
 
 logger = logging.getLogger(__name__)
@@ -321,6 +322,64 @@ class AIService:
                 "report": "",
                 "analysis_json": {},
             }
+
+    async def reevaluate_tier(
+        self,
+        title: str,
+        abstract: str,
+        citation_count: Optional[int] = None,
+        publish_date: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """重新评估论文的 tier 等级。
+
+        Args:
+            title: 论文标题
+            abstract: 摘要
+            citation_count: 引用数
+            publish_date: 发布日期文本
+
+        Returns:
+            包含 tier 和 reason 的字典
+        """
+        try:
+            # 判断是否新论文（三个月内）
+            from datetime import datetime, timedelta
+            is_new_paper = False
+            if publish_date and publish_date != "未知":
+                try:
+                    # 尝试多种日期格式
+                    pub_dt = None
+                    for fmt in ["%Y-%m-%d", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d %H:%M:%S"]:
+                        try:
+                            pub_dt = datetime.strptime(publish_date.split(' ')[0].split('T')[0], "%Y-%m-%d")
+                            break
+                        except:
+                            continue
+                    
+                    if pub_dt and (datetime.now() - pub_dt) < timedelta(days=90):
+                        is_new_paper = True
+                except:
+                    pass
+
+            prompt = TIER_REEVALUATION_PROMPT.format(
+                title=title,
+                abstract=abstract[:1000] if abstract else "无",
+                citation_count=citation_count if citation_count is not None else "未知",
+                publish_date=publish_date or "未知",
+                is_new_paper="是" if is_new_paper else "否",
+            )
+
+            # 使用 AI 调用
+            response_text = await asyncio.to_thread(self._call_api, prompt, max_tokens=200)
+            result = self._parse_json(response_text)
+
+            return {
+                "tier": result.get("tier", "B"),
+                "reason": result.get("reason", ""),
+            }
+        except Exception as e:
+            logger.error(f"重新评估 tier 失败: {e}")
+            return {"tier": "B", "reason": str(e)}
 
     async def _extract_analysis_json(
         self,

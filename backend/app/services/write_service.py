@@ -25,6 +25,7 @@ class WriteTask:
     tags: Optional[list] = None
     md_output_path: Optional[str] = None
     has_analysis: bool = True
+    full_analysis: Optional[bool] = None
     future: asyncio.Future = field(default=None, repr=False)
 
 
@@ -151,6 +152,8 @@ class DatabaseWriteService:
                     paper.tags = task.tags
                 if task.md_output_path:
                     paper.md_output_path = task.md_output_path
+                if task.full_analysis is not None:
+                    paper.full_analysis = task.full_analysis
 
                 # 提交
                 logger.debug(f"准备提交: paper_id={task.paper_id}")
