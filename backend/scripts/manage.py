@@ -196,7 +196,7 @@ async def cmd_export_notebook(args):
     from app.services.arxiv_service import ArxivService
 
     bridge = KnowledgeBridgeService()
-    FUZZY_THRESHOLD = 85  # 模糊匹配阈值
+    FUZZY_THRESHOLD = args.fuzzy_threshold  # 模糊匹配阈值 (参数化)
 
     # 获取 RAG 语义匹配的标题/ID (如果提供了 query)
     rag_titles: Set[str] = set()
@@ -291,7 +291,7 @@ async def cmd_export_notebook(args):
         papers = candidate_papers[:args.limit] if args.limit > 0 else candidate_papers
 
     # ===== v2.1 新增: ArXiv 全时域搜索补漏 =====
-    min_papers = 3  # 最少期望论文数
+    min_papers = args.min_papers  # 最少期望论文数 (参数化)
     if args.query and len(papers) < min_papers and args.auto_search:
         logger.info(f"⚠️ 本地库仅找到 {len(papers)} 篇，触发 ArXiv 全时域搜索...")
 
@@ -401,6 +401,8 @@ def main():
     p_export.add_argument("--auto-search", action="store_true", help="本地库不足时自动从 ArXiv 搜索补充")
     p_export.add_argument("--include-videos", action="store_true", help="同时导出 Obsidian 视频笔记 (多源混合导出)")
     p_export.add_argument("--video-limit", type=int, default=5, help="视频笔记最大导出数量 (配合 --include-videos)")
+    p_export.add_argument("--fuzzy-threshold", type=int, default=75, help="模糊匹配阈值 (0-100, 默认 75)")
+    p_export.add_argument("--min-papers", type=int, default=5, help="触发 ArXiv 搜索的最少论文数 (默认 5)")
 
     args = parser.parse_args()
 

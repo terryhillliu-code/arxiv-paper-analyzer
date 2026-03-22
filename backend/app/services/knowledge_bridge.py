@@ -274,30 +274,55 @@ class KnowledgeBridgeService:
                 temp_file.unlink()
 
     def scan_video_notes(self, query: str = None, limit: int = 5) -> List[Path]:
-        """扫描视频笔记目录，返回匹配的文件。
-
-        Args:
-            query: 搜索关键词（匹配文件名）
-            limit: 最大返回数量
-
-        Returns:
-            匹配的文件路径列表
-        """
+        """扫描视频笔记目录，返回匹配的文件 (v2.2: 增加 RAG 语义支持)。"""
         if not self.VIDEO_NOTES_PATH.exists():
             logger.warning(f"视频笔记目录不存在: {self.VIDEO_NOTES_PATH}")
             return []
 
         results = []
-        for md_file in self.VIDEO_NOTES_PATH.glob("*.md"):
-            if query:
-                # 模糊匹配文件名
-                if query.lower() in md_file.stem.lower():
+        
+        # 优先使用 RAG 进行语义检索
+        if query:
+            logger.info(f"🔍 正在对视频笔记执行 RAG 语义检索: {query}")
+            try:
+                import json
+                import subprocess
+                rag_venv = "/Users/liufang/zhiwei-rag/venv/bin/python3"
+                bridge_script = "/Users/liufang/zhiwei-rag/bridge.py"
+
+                # 仅筛选视频笔记目录下的结果
+                result = subprocess.run(
+                    [rag_venv, bridge_script, "retrieve", query, "--top-k", str(limit * 2)],
+                    capture_output=True, text=True, timeout=20
+                )
+
+                if result.returncode == 0:
+                    rag_data = json.loads(result.stdout)
+                    for item in rag_data:
+                        source_path = Path(item.get("source", ""))
+                        # 确保结果在视频笔记目录内且是 .md 文件
+                        if str(self.VIDEO_NOTES_PATH) in str(source_path) and source_path.suffix == ".md":
+                            if source_path not in results:
+                                results.append(source_path)
+                        if len(results) >= limit:
+                            break
+                    logger.info(f"✅ RAG 召回了 {len(results)} 个相关视频笔记")
+            except Exception as e:
+                logger.error(f"⚠️ 视频 RAG 联动失败，回退到模糊匹配: {e}")
+
+        # 如果 RAG 结果不足或未提供 query，回退到文件名模糊匹配
+        if len(results) < limit:
+            for md_file in self.VIDEO_NOTES_PATH.glob("*.md"):
+                if md_file in results:
+                    continue
+                if query:
+                    if query.lower() in md_file.stem.lower():
+                        results.append(md_file)
+                else:
                     results.append(md_file)
-            else:
-                results.append(md_file)
 
-            if len(results) >= limit:
-                break
+                if len(results) >= limit:
+                    break
 
-        logger.info(f"扫描视频笔记: 找到 {len(results)} 个匹配项")
+        logger.info(f"最终获取视频笔记: {len(results)} 个")
         return results
