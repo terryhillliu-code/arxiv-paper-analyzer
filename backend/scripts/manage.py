@@ -324,21 +324,43 @@ async def cmd_export_notebook(args):
                 )
                 papers = list(result.scalars().all())
 
-    if not papers:
+    if not papers and not args.include_videos:
         logger.info(f"未找到符合条件 ({args.tiers}) 的已分析论文")
         logger.info(f"💡 提示: 使用 --auto-search 参数可自动从 ArXiv 搜索补充")
+        logger.info(f"💡 提示: 使用 --include-videos 参数可同时导出视频笔记")
         return
 
-    logger.info(f"开始导出 {len(papers)} 篇论文到 NotebookLM 格式 (模板: {args.template})...")
     success_count = 0
-    for p in papers:
-        logger.info(f"正在桥接: {p.title[:50]}...")
-        if await bridge.bridge_paper(p, template_key=args.template):
-            success_count += 1
+    if papers:
+        logger.info(f"开始导出 {len(papers)} 篇论文到 NotebookLM 格式 (模板: {args.template})...")
+        for p in papers:
+            logger.info(f"正在桥接: {p.title[:50]}...")
+            if await bridge.bridge_paper(p, template_key=args.template):
+                success_count += 1
+        logger.info("=" * 40)
+        logger.info(f"论文导出完成！成功: {success_count} / {len(papers)}")
+        logger.info(f"文件已存入本地暂存区: /tmp/notebooklm_export")
 
+    # ===== v2.2 新增: 多源知识混合导出 (视频笔记) =====
+    video_success = 0
+    if args.include_videos:
+        logger.info("\n" + "=" * 40)
+        logger.info("📹 开始导出视频笔记...")
+        video_files = bridge.scan_video_notes(query=args.query, limit=args.video_limit)
+        for vf in video_files:
+            logger.info(f"正在桥接视频笔记: {vf.stem[:50]}...")
+            if await bridge.bridge_generic_markdown(vf, doc_type="VIDEO", template_key=args.template):
+                video_success += 1
+        logger.info(f"视频笔记导出完成！成功: {video_success} / {len(video_files)}")
+
+    # 汇总
+    total_success = success_count + video_success
     logger.info("=" * 40)
-    logger.info(f"导出完成！成功: {success_count} / {len(papers)}")
-    logger.info(f"文件已存入本地暂存区: /tmp/notebooklm_export")
+    logger.info(f"🎯 多源知识导出完成！总计: {total_success} 个素材")
+    logger.info(f"   - 论文: {success_count}")
+    if args.include_videos:
+        logger.info(f"   - 视频笔记: {video_success}")
+    logger.info(f"📂 导出路径: /tmp/notebooklm_export")
     logger.info("=" * 40)
 
 
@@ -377,6 +399,8 @@ def main():
     p_export.add_argument("--query", type=str, default=None, help="按标题关键词或语义过滤")
     p_export.add_argument("--template", type=str, default="default", help="提示词模板 (default, tech_comparison, podcast_script)")
     p_export.add_argument("--auto-search", action="store_true", help="本地库不足时自动从 ArXiv 搜索补充")
+    p_export.add_argument("--include-videos", action="store_true", help="同时导出 Obsidian 视频笔记 (多源混合导出)")
+    p_export.add_argument("--video-limit", type=int, default=5, help="视频笔记最大导出数量 (配合 --include-videos)")
 
     args = parser.parse_args()
 
