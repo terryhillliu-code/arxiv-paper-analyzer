@@ -676,6 +676,46 @@ overall_rating: {analysis_json.get("overall_rating", "B")}
                 lines = lines[:-1]
             cleaned_text = "\n".join(lines)
 
+        # 预处理：修复字符串值中未转义的双引号
+        # 使用状态机方法修复 JSON 中的非法引号
+        def fix_json_quotes(json_str: str) -> str:
+            result = []
+            i = 0
+            in_string = False
+            current_key = None
+
+            while i < len(json_str):
+                char = json_str[i]
+
+                if char == '"' and (i == 0 or json_str[i-1] != '\\'):
+                    if not in_string:
+                        # 开始字符串
+                        in_string = True
+                        result.append(char)
+                    else:
+                        # 检查这是字符串结束还是内部引号
+                        # 向前看：如果后面是 : , } ] 或行尾，则是结束
+                        rest = json_str[i+1:].lstrip()
+                        if rest and rest[0] in ':,}]':
+                            # 这是字符串结束
+                            in_string = False
+                            result.append(char)
+                        elif not rest or rest[0] == '\n':
+                            # 行尾，可能是字符串结束
+                            in_string = False
+                            result.append(char)
+                        else:
+                            # 这是字符串内部的引号，需要转义
+                            result.append('\\"')
+                    i += 1
+                else:
+                    result.append(char)
+                    i += 1
+
+            return ''.join(result)
+
+        cleaned_text = fix_json_quotes(cleaned_text)
+
         # 策略 1: 从清理后的文本中提取代码块
         json_block_patterns = [
             r"```json\s*([\s\S]*?)\s*```",  # ```json ... ```
