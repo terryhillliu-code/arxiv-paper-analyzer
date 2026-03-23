@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import FetchLog, Paper
+from app.services.paper_scorer import PaperScorer
 
 logger = logging.getLogger(__name__)
 
@@ -350,6 +351,7 @@ class ArxivService:
         date_from: Optional[datetime] = None,
         date_to: Optional[datetime] = None,
         max_results: int = 200,
+        prefilter: bool = True,
     ) -> dict:
         """按日期范围抓取论文。
 
@@ -361,12 +363,14 @@ class ArxivService:
             date_from: 开始日期（包含）
             date_to: 结束日期（包含）
             max_results: 最大抓取数量（建议200-500以保证覆盖）
+            prefilter: 是否启用预筛选（默认 True）
 
         Returns:
             抓取结果字典，包含：
             - total_fetched: 总抓取数量
             - new_papers: 新增论文数量
             - filtered_papers: 日期范围内论文数量
+            - skipped_by_score: 因评分过低跳过的论文数
             - message: 结果消息
         """
         # 默认分类
@@ -411,6 +415,7 @@ class ArxivService:
             total_fetched = 0
             new_papers = 0
             filtered_papers = 0
+            skipped_by_score = 0
             early_stop = False
 
             # 使用集合跟踪当前批次已处理的 arxiv_id，避免同一批次重复插入
@@ -452,8 +457,19 @@ class ArxivService:
                 if existing.scalar_one_or_none() is not None:
                     continue
 
-                # 创建 Paper 对象
+                # 提取作者列表用于预筛选
                 authors = [author.name for author in result.authors]
+                title = result.title.strip()
+                abstract = result.summary.strip() if result.summary else ""
+
+                # 预筛选：评估论文重要性
+                if prefilter:
+                    if not PaperScorer.should_fetch(title, abstract, authors):
+                        skipped_by_score += 1
+                        logger.debug(f"跳过低分论文: {title[:40]}...")
+                        continue
+
+                # 创建 Paper 对象
                 categories_list = [cat for cat in result.categories]
 
                 paper = Paper(
@@ -480,6 +496,8 @@ class ArxivService:
             await db.commit()
 
             message = f"抓取 {total_fetched} 篇，日期范围内 {filtered_papers} 篇，新增 {new_papers} 篇"
+            if skipped_by_score > 0:
+                message += f"，预筛选跳过 {skipped_by_score} 篇"
             if early_stop:
                 message += f"（提前终止于日期边界）"
 
@@ -489,6 +507,7 @@ class ArxivService:
                 "total_fetched": total_fetched,
                 "new_papers": new_papers,
                 "filtered_papers": filtered_papers,
+                "skipped_by_score": skipped_by_score,
                 "message": message,
             }
 
@@ -506,5 +525,6 @@ class ArxivService:
                 "total_fetched": 0,
                 "new_papers": 0,
                 "filtered_papers": 0,
+                "skipped_by_score": 0,
                 "message": error_msg,
             }
