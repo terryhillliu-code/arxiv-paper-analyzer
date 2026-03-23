@@ -56,7 +56,7 @@ class ScheduledFetcher:
         max_retries: int = 3,
         retry_delay: int = 60,
         categories: Optional[list] = None,
-        max_results: int = 100,
+        max_results: int = 500,
         max_concurrent_ai: int = 3,
     ):
         """
@@ -64,7 +64,7 @@ class ScheduledFetcher:
             max_retries: 最大重试次数
             retry_delay: 重试间隔（秒）
             categories: 要抓取的分类
-            max_results: 每次最大抓取数量（默认 100，配合预筛选提高覆盖率）
+            max_results: 每次最大抓取数量（默认 500，全量模式配合预筛选）
             max_concurrent_ai: AI 摘要生成并发数限制
         """
         self.max_retries = max_retries
