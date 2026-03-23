@@ -395,7 +395,10 @@ class ArxivService:
         )
 
         try:
+            # 配置客户端，增加请求间隔避免限流
             client = arxiv.Client()
+            client.delay_seconds = 5.0  # 增加延迟到 5 秒
+
             search = arxiv.Search(
                 query=query,
                 max_results=max_results,
@@ -528,3 +531,85 @@ class ArxivService:
                 "skipped_by_score": 0,
                 "message": error_msg,
             }
+
+    @staticmethod
+    async def fetch_by_categories_batch(
+        db: AsyncSession,
+        categories: Optional[List[str]] = None,
+        date_from: Optional[datetime] = None,
+        date_to: Optional[datetime] = None,
+        per_category_limit: int = 150,
+        prefilter: bool = True,
+        delay_between_categories: float = 10.0,
+    ) -> dict:
+        """按分类分批抓取论文，避免 ArXiv API 限流。
+
+        每个分类单独抓取，分类之间增加延迟。
+
+        Args:
+            db: 异步数据库会话
+            categories: 分类列表
+            date_from: 开始日期
+            date_to: 结束日期
+            per_category_limit: 每个分类的最大抓取数量
+            prefilter: 是否启用预筛选
+            delay_between_categories: 分类之间的延迟（秒）
+
+        Returns:
+            汇总的抓取结果
+        """
+        if not categories:
+            categories = ["cs.AI", "cs.CL", "cs.LG", "cs.CV"]
+
+        total_stats = {
+            "total_fetched": 0,
+            "new_papers": 0,
+            "filtered_papers": 0,
+            "skipped_by_score": 0,
+            "categories_processed": 0,
+            "errors": [],
+        }
+
+        logger.info(f"开始分批抓取，共 {len(categories)} 个分类")
+
+        for i, category in enumerate(categories):
+            logger.info(f"抓取分类 [{i+1}/{len(categories)}]: {category}")
+
+            try:
+                result = await ArxivService.fetch_by_date_range(
+                    db=db,
+                    categories=[category],
+                    date_from=date_from,
+                    date_to=date_to,
+                    max_results=per_category_limit,
+                    prefilter=prefilter,
+                )
+
+                total_stats["total_fetched"] += result.get("total_fetched", 0)
+                total_stats["new_papers"] += result.get("new_papers", 0)
+                total_stats["filtered_papers"] += result.get("filtered_papers", 0)
+                total_stats["skipped_by_score"] += result.get("skipped_by_score", 0)
+                total_stats["categories_processed"] += 1
+
+                logger.info(
+                    f"分类 {category} 完成: 抓取 {result.get('total_fetched', 0)}, "
+                    f"入库 {result.get('new_papers', 0)}"
+                )
+
+                # 分类之间延迟，避免限流（最后一个分类不需要）
+                if i < len(categories) - 1:
+                    logger.info(f"等待 {delay_between_categories} 秒...")
+                    await asyncio.sleep(delay_between_categories)
+
+            except Exception as e:
+                error_msg = f"分类 {category} 抓取失败: {str(e)}"
+                logger.error(error_msg)
+                total_stats["errors"].append(error_msg)
+                # 继续处理下一个分类
+
+        total_stats["message"] = (
+            f"分批抓取完成: {total_stats['categories_processed']}/{len(categories)} 分类, "
+            f"总数 {total_stats['total_fetched']}, 入库 {total_stats['new_papers']}"
+        )
+
+        return total_stats

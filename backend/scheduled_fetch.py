@@ -74,6 +74,9 @@ class ScheduledFetcher:
         self.max_concurrent_ai = max_concurrent_ai
         # 并发控制信号量
         self._semaphore = asyncio.Semaphore(max_concurrent_ai)
+        # 分批模式配置
+        self.batch_mode = True  # 默认启用分批模式避免限流
+        self.per_category_limit = 150  # 每个分类抓取上限
 
     async def fetch_papers_with_retry(
         self,
@@ -91,13 +94,24 @@ class ScheduledFetcher:
                 )
 
                 async with async_session_maker() as db:
-                    result = await ArxivService.fetch_by_date_range(
-                        db=db,
-                        categories=self.categories,
-                        date_from=date_from,
-                        date_to=date_to,
-                        max_results=self.max_results,
-                    )
+                    if self.batch_mode:
+                        # 分批抓取，避免限流
+                        result = await ArxivService.fetch_by_categories_batch(
+                            db=db,
+                            categories=self.categories,
+                            date_from=date_from,
+                            date_to=date_to,
+                            per_category_limit=self.per_category_limit,
+                        )
+                    else:
+                        # 单次抓取（可能触发限流）
+                        result = await ArxivService.fetch_by_date_range(
+                            db=db,
+                            categories=self.categories,
+                            date_from=date_from,
+                            date_to=date_to,
+                            max_results=self.max_results,
+                        )
 
                 logger.info(
                     f"抓取成功: 总数 {result['total_fetched']}, "
