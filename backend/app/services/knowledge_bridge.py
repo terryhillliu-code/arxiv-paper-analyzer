@@ -1,13 +1,15 @@
 """NotebookLM 知识桥接服务。
 
 实现数据清洗、聚合与传输的抽象层，支持分阶段演进联动方案。
-v2.2: 新增多源知识混合导出支持
+v2.4: 增强 Obsidian 检索策略（文件名 fallback + 目录扫描）
 """
 
 import os
 import re
 import shutil
 import logging
+import json
+import subprocess
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
 from datetime import datetime
@@ -17,29 +19,24 @@ import yaml
 # 配置日志
 logger = logging.getLogger(__name__)
 
+# RAG 工具路径
+RAG_VENV = "/Users/liufang/zhiwei-rag/venv/bin/python3"
+RAG_BRIDGE = "/Users/liufang/zhiwei-rag/bridge.py"
+
 
 class IDataNormalizer(ABC):
-    """数据规范化接口。
-
-    负责将本地存储（数据库/Markdown）的原始内容转换为目标平台（如 NotebookLM）
-    最易理解的格式。
-    """
+    """数据规范化接口。"""
 
     @abstractmethod
     def normalize(self, content: str, metadata: Dict[str, Any]) -> str:
-        """规范化处理内容。"""
         pass
 
 
 class ITransportStrategy(ABC):
-    """传输策略接口。
-
-    定义数据如何"到达"目标平台的交付方式。
-    """
+    """传输策略接口。"""
 
     @abstractmethod
     async def transport(self, data_path: Path, metadata: Dict[str, Any]) -> bool:
-        """执行传输逻辑。"""
         pass
 
 
@@ -47,68 +44,48 @@ class PaperNormalizer(IDataNormalizer):
     """针对 NotebookLM 优化的论文分析规范化器。"""
 
     def normalize(self, content: str, metadata: Dict[str, Any], super_prompt: str = "") -> str:
-        """清洗 Markdown，增加超级提示词引导。"""
-        # 1. 注入超级提示词 (如果存在)
         header = ""
         if super_prompt:
             header += "<!-- NOTEBOOKLM_SUPER_PROMPT_START -->\n"
             header += f"## 💡 首席研究员指令 (超级提示词)\n\n{super_prompt}\n"
             header += "<!-- NOTEBOOKLM_SUPER_PROMPT_END -->\n\n---\n\n"
 
-        # 2. 处理 Obsidian 双链 [[link|text]] -> text
         content = re.sub(r'\[\[([^\]|]+)\|([^\]]+)\]\]', r'\2', content)
-        # 3. 处理简版双链 [[link]] -> link
         content = re.sub(r'\[\[([^\]]+)\]\]', r'\1', content)
 
-        # 4. 合并核心元数据
         tier = metadata.get("tier", "B")
         header += f"# {metadata.get('title', '未命名文档')}\n\n"
         header += f"> 内容等级: {tier} | 导出时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         header += "---\n\n"
 
-        # 5. 移除正文中的本地附件引用
         content = re.sub(r'## 📄 PDF 附件.*?(?=\n##|$)', '', content, flags=re.DOTALL)
-
         return header + content
 
 
 class GenericMarkdownNormalizer(IDataNormalizer):
-    """通用 Markdown 规范化器。
-
-    用于清洗 ZhiweiVault 中的视频笔记、行业报告等非 PAPER 类型内容。
-    """
+    """通用 Markdown 规范化器。"""
 
     def normalize(self, content: str, metadata: Dict[str, Any], super_prompt: str = "") -> str:
-        """清洗通用 Markdown 内容。"""
-        # 1. 注入超级提示词
         header = ""
         if super_prompt:
             header += "<!-- NOTEBOOKLM_SUPER_PROMPT_START -->\n"
             header += f"## 💡 研究指引\n\n{super_prompt}\n"
             header += "<!-- NOTEBOOKLM_SUPER_PROMPT_END -->\n\n---\n\n"
 
-        # 2. 处理 Obsidian 特有语法
-        # 双链 [[link|text]] -> text
         content = re.sub(r'\[\[([^\]|]+)\|([^\]]+)\]\]', r'\2', content)
-        # [[link]] -> link
         content = re.sub(r'\[\[([^\]]+)\]\]', r'\1', content)
-        # 嵌入语法 ![[link]] -> [嵌入内容: link]
         content = re.sub(r'!\[\[([^\]]+)\]\]', r'[嵌入内容: \1]', content)
 
-        # 3. 移除 YAML frontmatter（保留关键信息）
         frontmatter_match = re.match(r'^---\n.*?\n---\n', content, re.DOTALL)
         extracted_meta = {}
         if frontmatter_match:
             fm_content = frontmatter_match.group(0)
             content = content[frontmatter_match.end():]
-
-            # 提取关键字段
             for field in ['title', 'date', 'tags', 'type', 'author']:
                 match = re.search(rf'^{field}:\s*(.+)$', fm_content, re.MULTILINE)
                 if match:
                     extracted_meta[field] = match.group(1).strip()
 
-        # 4. 构建头部元数据
         title = metadata.get('title') or extracted_meta.get('title', '未命名文档')
         doc_type = metadata.get('doc_type', 'VIDEO')
         source = metadata.get('source', 'Obsidian Vault')
@@ -123,37 +100,31 @@ class GenericMarkdownNormalizer(IDataNormalizer):
 
 
 class LocalFileTransport(ITransportStrategy):
-    """本地文件打包传输策略 (阶段二核心项目)。"""
+    """本地文件打包传输策略。"""
 
     def __init__(self, export_root: str = "/tmp/notebooklm_export"):
         self.export_root = Path(export_root).expanduser()
         self.ensure_dirs()
 
     def ensure_dirs(self):
-        """确保导出根目录存在。"""
         if not self.export_root.exists():
             self.export_root.mkdir(parents=True, exist_ok=True)
             logger.info(f"创建导出根目录: {self.export_root}")
 
     async def transport(self, data_path: Path, metadata: Dict[str, Any]) -> bool:
-        """将文件及相关附件拷贝到指定导出分区。"""
         try:
-            # 根据 JD 目录或 ID 创建子文件夹以防冲突
             safe_title = re.sub(r'[\\/*?:"<>|]', "_", metadata.get("title", "doc"))[:50]
             doc_type = metadata.get("doc_type", "PAPER")
             prefix = f"{doc_type[:3]}_{metadata.get('id', '0')}"
             target_dir = self.export_root / f"{prefix}_{safe_title}"
             target_dir.mkdir(exist_ok=True)
 
-            # 拷贝清洗后的 Markdown
             shutil.copy2(data_path, target_dir / "content.md")
 
-            # 如果是论文类型，拷贝 PDF
             if doc_type == "PAPER":
                 pdf_path = metadata.get("pdf_local_path")
                 if pdf_path and os.path.exists(pdf_path):
                     shutil.copy2(pdf_path, target_dir / os.path.basename(pdf_path))
-                    logger.info(f"成功拷贝 PDF 附件: {pdf_path}")
 
             logger.info(f"成功导出: {target_dir}")
             return True
@@ -165,22 +136,23 @@ class LocalFileTransport(ITransportStrategy):
 class KnowledgeBridgeService:
     """知识桥接中枢服务。"""
 
-    # Obsidian Vault 路径
     VAULT_PATH = Path.home() / "Documents" / "ZhiweiVault"
     VIDEO_NOTES_PATH = VAULT_PATH / "70-79_个人笔记_Personal" / "72_视频笔记_Video-Distill"
 
-    def __init__(
-        self,
-        normalizer: IDataNormalizer = None,
-        transport: ITransportStrategy = None
-    ):
+    # 高价值目录（按优先级排列）
+    PRIORITY_FOLDERS = [
+        "90-99_系统与归档_System/92_归档备份/10_KB_Backup/10_Knowledge_Base/Reports/【核心】网络与互联",
+        "90-99_系统与归档_System/92_归档备份/10_KB_Backup/10_Knowledge_Base/Reports/【参考】行业报告",
+        "70-79_个人笔记_Personal/71_技术学习",
+    ]
+
+    def __init__(self, normalizer=None, transport=None):
         self.normalizer = normalizer or PaperNormalizer()
         self.generic_normalizer = GenericMarkdownNormalizer()
         self.transport = transport or LocalFileTransport()
         self._templates = self._load_templates()
 
     def _load_templates(self) -> dict:
-        """加载提示词模板。"""
         template_path = Path(__file__).parent.parent / "notebooklm_templates.yaml"
         if template_path.exists():
             try:
@@ -190,9 +162,18 @@ class KnowledgeBridgeService:
                 logger.error(f"加载模板失败: {e}")
         return {}
 
-    async def bridge_paper(self, paper_obj: Any, custom_md: str = None, template_key: str = "default") -> bool:
+    def _build_super_prompt(self, template_key: str, persona: str = None) -> str:
+        """构建超级提示词（模板 + 画像）"""
+        base_prompt = self._templates.get(template_key, {}).get("prompt", "")
+        if not base_prompt and template_key != "default":
+            base_prompt = self._templates.get("default", {}).get("prompt", "")
+        if persona:
+            return f"{persona}\n\n{base_prompt}"
+        return base_prompt
+
+    async def bridge_paper(self, paper_obj: Any, custom_md: str = None,
+                           template_key: str = "default", persona: str = None) -> bool:
         """将单篇论文对接到目标平台。"""
-        # 准备元数据
         metadata = {
             "id": paper_obj.id,
             "title": paper_obj.title,
@@ -203,126 +184,163 @@ class KnowledgeBridgeService:
             "doc_type": "PAPER"
         }
 
-        # 获取对应模板的提示词
-        super_prompt = self._templates.get(template_key, {}).get("prompt", "")
-        if not super_prompt and template_key != "default":
-             super_prompt = self._templates.get("default", {}).get("prompt", "")
-
-        # 1. 规范化清洗数据
+        super_prompt = self._build_super_prompt(template_key, persona)
         raw_content = custom_md or paper_obj.analysis_report or ""
         normalized_content = self.normalizer.normalize(raw_content, metadata, super_prompt=super_prompt)
 
-        # 2. 写入临时文件
         temp_file = Path(f"/tmp/bridge_{paper_obj.id}.md")
         temp_file.write_text(normalized_content, encoding="utf-8")
 
         try:
-            # 3. 调用传输策略
-            success = await self.transport.transport(temp_file, metadata)
-            return success
+            return await self.transport.transport(temp_file, metadata)
         finally:
-            # 清理临时文件
             if temp_file.exists():
                 temp_file.unlink()
 
-    async def bridge_generic_markdown(
-        self,
-        md_path: Path,
-        doc_type: str = "VIDEO",
-        template_key: str = "default"
-    ) -> bool:
-        """将通用 Markdown 文件对接到目标平台。
-
-        Args:
-            md_path: Markdown 文件路径
-            doc_type: 文档类型 (VIDEO, REPORT, NOTE)
-            template_key: 模板键名
-
-        Returns:
-            是否成功
-        """
+    async def bridge_generic_markdown(self, md_path: Path, doc_type: str = "VIDEO",
+                                       template_key: str = "default", persona: str = None) -> bool:
+        """将通用 Markdown 文件对接到目标平台。"""
         if not md_path.exists():
             logger.warning(f"文件不存在: {md_path}")
             return False
 
-        # 读取内容
         content = md_path.read_text(encoding="utf-8")
-
-        # 准备元数据
         metadata = {
-            "id": hash(str(md_path)) % 100000,  # 简单 ID 生成
+            "id": hash(str(md_path)) % 100000,
             "title": md_path.stem,
             "source": str(md_path.parent.name),
             "doc_type": doc_type
         }
 
-        # 获取模板提示词
-        super_prompt = self._templates.get(template_key, {}).get("prompt", "")
-
-        # 规范化
+        super_prompt = self._build_super_prompt(template_key, persona)
         normalized_content = self.generic_normalizer.normalize(content, metadata, super_prompt=super_prompt)
 
-        # 写入临时文件
         temp_file = Path(f"/tmp/bridge_generic_{metadata['id']}.md")
         temp_file.write_text(normalized_content, encoding="utf-8")
 
         try:
-            success = await self.transport.transport(temp_file, metadata)
-            return success
+            return await self.transport.transport(temp_file, metadata)
         finally:
             if temp_file.exists():
                 temp_file.unlink()
 
+    # ==================== 检索方法 ====================
+
+    def scan_obsidian_notes(self, query: str, limit: int = 5) -> List[Path]:
+        """多策略 Obsidian 笔记检索：RAG → 文件名 grep → 目录扫描。"""
+        results = []
+        if not query:
+            return []
+
+        # 策略 1: RAG 语义检索
+        logger.info(f"🔍 [策略1] RAG 语义检索: {query}")
+        rag_results = self._rag_retrieve(query, limit * 2)
+        for p in rag_results:
+            if p not in results:
+                results.append(p)
+
+        # 策略 2: 文件名 grep（RAG 覆盖不到的情况）
+        if len(results) < limit:
+            logger.info(f"🔍 [策略2] 文件名搜索补充...")
+            grep_results = self._grep_vault(query, limit - len(results))
+            for p in grep_results:
+                if p not in results:
+                    results.append(p)
+
+        # 策略 3: 高价值目录扫描
+        if len(results) < limit:
+            logger.info(f"🔍 [策略3] 高价值目录扫描...")
+            folder_results = self._scan_priority_folders(query, limit - len(results))
+            for p in folder_results:
+                if p not in results:
+                    results.append(p)
+
+        logger.info(f"📊 Obsidian 综合检索完成: {len(results)} 个结果")
+        return results[:limit]
+
     def scan_video_notes(self, query: str = None, limit: int = 5) -> List[Path]:
-        """扫描视频笔记目录，返回匹配的文件 (v2.2: 增加 RAG 语义支持)。"""
+        """扫描视频笔记。"""
         if not self.VIDEO_NOTES_PATH.exists():
-            logger.warning(f"视频笔记目录不存在: {self.VIDEO_NOTES_PATH}")
             return []
 
         results = []
-        
-        # 优先使用 RAG 进行语义检索
         if query:
-            logger.info(f"🔍 正在对视频笔记执行 RAG 语义检索: {query}")
-            try:
-                import json
-                import subprocess
-                rag_venv = "/Users/liufang/zhiwei-rag/venv/bin/python3"
-                bridge_script = "/Users/liufang/zhiwei-rag/bridge.py"
+            rag_results = self._rag_retrieve(query, limit * 2)
+            for p in rag_results:
+                if str(self.VIDEO_NOTES_PATH) in str(p) and p not in results:
+                    results.append(p)
+                if len(results) >= limit:
+                    break
 
-                # 仅筛选视频笔记目录下的结果
-                result = subprocess.run(
-                    [rag_venv, bridge_script, "retrieve", query, "--top-k", str(limit * 2)],
-                    capture_output=True, text=True, timeout=20
-                )
-
-                if result.returncode == 0:
-                    rag_data = json.loads(result.stdout)
-                    for item in rag_data:
-                        source_path = Path(item.get("source", ""))
-                        # 确保结果在视频笔记目录内且是 .md 文件
-                        if str(self.VIDEO_NOTES_PATH) in str(source_path) and source_path.suffix == ".md":
-                            if source_path not in results:
-                                results.append(source_path)
-                        if len(results) >= limit:
-                            break
-                    logger.info(f"✅ RAG 召回了 {len(results)} 个相关视频笔记")
-            except Exception as e:
-                logger.error(f"⚠️ 视频 RAG 联动失败，回退到模糊匹配: {e}")
-
-        # 如果 RAG 结果不足或未提供 query，回退到文件名模糊匹配
         if len(results) < limit:
             for md_file in self.VIDEO_NOTES_PATH.glob("*.md"):
                 if md_file in results:
                     continue
-                if query:
-                    if query.lower() in md_file.stem.lower():
-                        results.append(md_file)
-                else:
+                if not query or query.lower() in md_file.stem.lower():
                     results.append(md_file)
-
                 if len(results) >= limit:
                     break
 
-        logger.info(f"最终获取视频笔记: {len(results)} 个")
+        return results
+
+    # ==================== 内部检索工具 ====================
+
+    def _rag_retrieve(self, query: str, top_k: int = 10) -> List[Path]:
+        """通过 zhiwei-rag 进行语义检索。"""
+        results = []
+        try:
+            result = subprocess.run(
+                [RAG_VENV, RAG_BRIDGE, "retrieve", query, "--top-k", str(top_k)],
+                capture_output=True, text=True, timeout=20
+            )
+            if result.returncode == 0:
+                rag_data = json.loads(result.stdout)
+                for item in rag_data:
+                    source_path = Path(item.get("source", ""))
+                    if source_path.suffix == ".md" and source_path.exists():
+                        results.append(source_path)
+        except Exception as e:
+            logger.error(f"⚠️ RAG 检索失败: {e}")
+        return results
+
+    def _grep_vault(self, query: str, limit: int = 5) -> List[Path]:
+        """通过文件名和内容 grep 搜索 Vault。"""
+        results = []
+        keywords = query.split()
+        if not keywords:
+            return []
+
+        # 构建 grep 模式
+        pattern = "|".join(keywords)
+        try:
+            result = subprocess.run(
+                ["grep", "-rliE", pattern, str(self.VAULT_PATH)],
+                capture_output=True, text=True, timeout=15
+            )
+            if result.returncode == 0:
+                for line in result.stdout.strip().split("\n"):
+                    p = Path(line.strip())
+                    if p.suffix == ".md" and p.exists():
+                        results.append(p)
+                    if len(results) >= limit:
+                        break
+        except Exception as e:
+            logger.error(f"⚠️ grep 搜索失败: {e}")
+        return results
+
+    def _scan_priority_folders(self, query: str, limit: int = 5) -> List[Path]:
+        """扫描预定义的高价值目录。"""
+        results = []
+        keywords = [k.lower() for k in query.split()]
+
+        for folder_rel in self.PRIORITY_FOLDERS:
+            folder = self.VAULT_PATH / folder_rel
+            if not folder.exists():
+                continue
+            for md_file in folder.glob("*.md"):
+                name_lower = md_file.stem.lower()
+                if any(kw in name_lower for kw in keywords):
+                    results.append(md_file)
+                if len(results) >= limit:
+                    return results
         return results

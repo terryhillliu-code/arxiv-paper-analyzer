@@ -201,26 +201,44 @@ async def cmd_sync_scores(args):
 
 
 async def cmd_export_notebook(args):
-    """处理 export-notebook 子命令 (v2.2: 增加模糊匹配加固)"""
+    """处理 export-notebook 子命令 (v3.0: Obsidian 优先 + 并行分析 + 快速模式)"""
     from app.services.knowledge_bridge import KnowledgeBridgeService
     from app.services.arxiv_service import ArxivService
 
     bridge = KnowledgeBridgeService()
-    FUZZY_THRESHOLD = args.fuzzy_threshold  # 模糊匹配阈值 (参数化)
+    persona = args.persona or ""
+    FUZZY_THRESHOLD = args.fuzzy_threshold
 
-    # 获取 RAG 语义匹配的标题/ID (如果提供了 query)
+    # ===== Phase 0: Obsidian 优先检索 (< 5秒) =====
+    obsidian_success = 0
+    obsidian_count = 0
+    if args.query:
+        logger.info("=" * 40)
+        logger.info(f"📓 [Phase 0] Obsidian 优先检索: {args.query}")
+        obsidian_files = bridge.scan_obsidian_notes(query=args.query, limit=args.obsidian_limit)
+        obsidian_count = len(obsidian_files)
+        logger.info(f"📊 Obsidian 命中: {obsidian_count} 个文件")
+        for of in obsidian_files:
+            logger.info(f"正在桥接: {of.stem[:50]}...")
+            if await bridge.bridge_generic_markdown(of, doc_type="NOTE",
+                                                      template_key=args.template, persona=persona):
+                obsidian_success += 1
+        logger.info(f"✅ Obsidian 导出完成: {obsidian_success}/{obsidian_count}")
+
+    # ===== Phase 1: 本地论文库匹配 =====
+    logger.info("\n" + "=" * 40)
+    logger.info(f"📄 [Phase 1] 本地论文库检索...")
+
+    # RAG 语义匹配
     rag_titles: Set[str] = set()
     if args.query:
-        logger.info(f"🔍 正在通过 zhiwei-rag 进行语义检索: {args.query}")
         try:
             rag_venv = "/Users/liufang/zhiwei-rag/venv/bin/python3"
             bridge_script = "/Users/liufang/zhiwei-rag/bridge.py"
-
             result = subprocess.run(
                 [rag_venv, bridge_script, "retrieve", args.query, "--top-k", "20"],
                 capture_output=True, text=True, timeout=30
             )
-
             if result.returncode == 0:
                 rag_data = json.loads(result.stdout)
                 for item in rag_data:
@@ -229,144 +247,102 @@ async def cmd_export_notebook(args):
                     if title_part.startswith("[") and "]" in title_part:
                         title_part = title_part.split("]", 1)[1].strip()
                     rag_titles.add(title_part)
-                logger.info(f"✅ RAG 召回了 {len(rag_titles)} 个潜在匹配项")
-            else:
-                logger.error(f"❌ RAG 检索失败: {result.stderr}")
         except Exception as e:
             logger.error(f"⚠️ RAG 联动异常: {e}")
 
     async with async_session_maker() as db:
         tiers = args.tiers.split(',')
-
-        # 基础查询：已分析过的高质量论文
         query = select(Paper).where(Paper.tier.in_(tiers), Paper.has_analysis == True)
-
-        # 混合检索过滤
         if args.query:
             from sqlalchemy import or_
             fuzzy_query = f"%{args.query.strip().replace(' ', '%')}%"
             conditions = [Paper.title.ilike(fuzzy_query)]
-
             if rag_titles:
                 for rt in list(rag_titles)[:10]:
-                    if len(rt) > 20:
-                        rt_part = rt[:20].strip()
-                        conditions.append(Paper.title.contains(rt_part))
-                    else:
-                        conditions.append(Paper.title.ilike(f"%{rt}%"))
-
+                    rt_part = rt[:20].strip() if len(rt) > 20 else rt
+                    conditions.append(Paper.title.ilike(f"%{rt_part}%"))
             query = query.where(or_(*conditions))
-
-        # 扩大搜索范围，后续用模糊匹配过滤
         query = query.limit(args.limit * 3 if args.limit > 0 else 30)
-
         result = await db.execute(query)
         candidate_papers = list(result.scalars().all())
 
-    # ===== v2.2 新增: 模糊匹配过滤 =====
+    # 模糊匹配过滤
     papers = []
     if args.query and rag_titles:
-        logger.info(f"🔧 对 {len(candidate_papers)} 个候选进行模糊匹配 (阈值: {FUZZY_THRESHOLD})...")
-
         for paper in candidate_papers:
-            paper_title = paper.title.lower()
-            matched = False
-
-            # 对每个 RAG 召回的标题进行模糊匹配
             for rag_title in rag_titles:
-                rag_title_lower = rag_title.lower()
-
-                # 使用 token_sort_ratio 处理空格/连字符差异
-                # 例如 "Mixture of Depths" vs "Mixture-of-Depths"
-                ratio = fuzz.token_sort_ratio(paper_title, rag_title_lower)
-
+                ratio = fuzz.token_sort_ratio(paper.title.lower(), rag_title.lower())
                 if ratio >= FUZZY_THRESHOLD:
-                    logger.info(f"  ✅ 模糊匹配: '{paper.title[:40]}' ↔ '{rag_title[:40]}' ({ratio}%)")
-                    matched = True
+                    papers.append(paper)
                     break
-
-            if matched:
-                papers.append(paper)
-
-        # 如果模糊匹配结果不足，补充直接匹配的结果
         if len(papers) < (args.limit if args.limit > 0 else 10):
             for paper in candidate_papers:
                 if paper not in papers:
                     papers.append(paper)
                     if args.limit > 0 and len(papers) >= args.limit:
                         break
-
-        logger.info(f"📊 模糊匹配后: {len(papers)} 篇")
     else:
         papers = candidate_papers[:args.limit] if args.limit > 0 else candidate_papers
 
-    # ===== v2.1 新增: ArXiv 全时域搜索补漏 =====
-    min_papers = args.min_papers  # 最少期望论文数 (参数化)
-    if args.query and len(papers) < min_papers and args.auto_search:
-        logger.info(f"⚠️ 本地库仅找到 {len(papers)} 篇，触发 ArXiv 全时域搜索...")
+    logger.info(f"📊 本地论文命中: {len(papers)} 篇")
+
+    # ===== Phase 2: ArXiv 兜底 (仅在 Obsidian + 本地均不足时) =====
+    total_local = obsidian_count + len(papers)
+    min_papers = args.min_papers
+    if args.query and total_local < min_papers and args.auto_search:
+        logger.info(f"\n⚠️ 本地素材仅 {total_local} 个 (Obsidian:{obsidian_count} + 论文:{len(papers)})，触发 ArXiv 兜底...")
 
         async with async_session_maker() as db:
-            search_result = await ArxivService.fetch_by_relevance(
-                db, args.query, max_results=10
-            )
+            search_result = await ArxivService.fetch_by_relevance(db, args.query, max_results=10)
 
         new_papers = search_result.get("papers", [])
         if new_papers:
-            logger.info(f"📥 ArXiv 搜索新增 {len(new_papers)} 篇论文，开始快速分析...")
-
-            # 对新论文进行快速分析
-            semaphore = asyncio.Semaphore(2)
-            for paper in new_papers:
-                logger.info(f"🔬 快速分析: {paper.title[:50]}...")
+            logger.info(f"📥 ArXiv 新增 {len(new_papers)} 篇，开始并行快速分析...")
+            semaphore = asyncio.Semaphore(4)  # v3.0: 并行度提升到 4
+            tasks = [paper_analyzer.analyze_paper(p, semaphore, quick_mode=True) for p in new_papers]
+            for coro in asyncio.as_completed(tasks):
                 try:
-                    await paper_analyzer.analyze_paper(paper, semaphore, quick_mode=True)
+                    await coro
                 except Exception as e:
-                    logger.warning(f"分析失败 {paper.arxiv_id}: {e}")
+                    logger.warning(f"分析失败: {e}")
 
-            # 重新查询符合条件的论文
             async with async_session_maker() as db:
                 result = await db.execute(
                     select(Paper).where(
-                        Paper.tier.in_(tiers),
-                        Paper.has_analysis == True,
+                        Paper.tier.in_(tiers), Paper.has_analysis == True,
                         Paper.title.ilike(f"%{args.query.replace(' ', '%')}%")
                     ).limit(args.limit if args.limit > 0 else 10)
                 )
                 papers = list(result.scalars().all())
 
-    if not papers and not args.include_videos:
-        logger.info(f"未找到符合条件 ({args.tiers}) 的已分析论文")
-        logger.info(f"💡 提示: 使用 --auto-search 参数可自动从 ArXiv 搜索补充")
-        logger.info(f"💡 提示: 使用 --include-videos 参数可同时导出视频笔记")
-        return
-
+    # ===== 导出论文 =====
     success_count = 0
     if papers:
-        logger.info(f"开始导出 {len(papers)} 篇论文到 NotebookLM 格式 (模板: {args.template})...")
+        logger.info(f"\n📄 导出 {len(papers)} 篇论文 (模板: {args.template})...")
         for p in papers:
             logger.info(f"正在桥接: {p.title[:50]}...")
-            if await bridge.bridge_paper(p, template_key=args.template):
+            if await bridge.bridge_paper(p, template_key=args.template, persona=persona):
                 success_count += 1
-        logger.info("=" * 40)
-        logger.info(f"论文导出完成！成功: {success_count} / {len(papers)}")
-        logger.info(f"文件已存入本地暂存区: /tmp/notebooklm_export")
 
-    # ===== v2.2 新增: 多源知识混合导出 (视频笔记) =====
+    # ===== 视频笔记 =====
     video_success = 0
     if args.include_videos:
-        logger.info("\n" + "=" * 40)
-        logger.info("📹 开始导出视频笔记...")
+        logger.info("\n📹 导出视频笔记...")
         video_files = bridge.scan_video_notes(query=args.query, limit=args.video_limit)
         for vf in video_files:
-            logger.info(f"正在桥接视频笔记: {vf.stem[:50]}...")
-            if await bridge.bridge_generic_markdown(vf, doc_type="VIDEO", template_key=args.template):
+            if await bridge.bridge_generic_markdown(vf, doc_type="VIDEO",
+                                                      template_key=args.template, persona=persona):
                 video_success += 1
-        logger.info(f"视频笔记导出完成！成功: {video_success} / {len(video_files)}")
 
-    # 汇总
-    total_success = success_count + video_success
-    logger.info("=" * 40)
+    # ===== 汇总 =====
+    total_success = obsidian_success + success_count + video_success
+    if total_success == 0 and not args.auto_search:
+        logger.info(f"未找到相关素材。💡 提示: 使用 --auto-search 从 ArXiv 补充")
+        return
+
+    logger.info("\n" + "=" * 40)
     logger.info(f"🎯 多源知识导出完成！总计: {total_success} 个素材")
+    logger.info(f"   - Obsidian 笔记: {obsidian_success}")
     logger.info(f"   - 论文: {success_count}")
     if args.include_videos:
         logger.info(f"   - 视频笔记: {video_success}")
@@ -412,7 +388,10 @@ def main():
     p_export.add_argument("--template", type=str, default="default", help="提示词模板 (default, tech_comparison, podcast_script)")
     p_export.add_argument("--auto-search", action="store_true", help="本地库不足时自动从 ArXiv 搜索补充")
     p_export.add_argument("--include-videos", action="store_true", help="同时导出 Obsidian 视频笔记 (多源混合导出)")
+    p_export.add_argument("--include-obsidian", action="store_true", help="同时导出全局 Obsidian 相关笔记")
     p_export.add_argument("--video-limit", type=int, default=5, help="视频笔记最大导出数量 (配合 --include-videos)")
+    p_export.add_argument("--obsidian-limit", type=int, default=5, help="Obsidian 笔记最大导出数量 (配合 --include-obsidian)")
+    p_export.add_argument("--persona", type=str, default=None, help="注入个人画像文本")
     p_export.add_argument("--fuzzy-threshold", type=int, default=75, help="模糊匹配阈值 (0-100, 默认 75)")
     p_export.add_argument("--min-papers", type=int, default=5, help="触发 ArXiv 搜索的最少论文数 (默认 5)")
 
