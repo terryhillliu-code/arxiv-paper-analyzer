@@ -187,6 +187,46 @@ export default function PaperDetail() {
     return format(new Date(dateStr), 'yyyy年M月d日', { locale: zhCN })
   }
 
+  // 导出思维导图
+  const downloadOutline = (format) => {
+    if (!analysis_json?.outline) return
+
+    let content = ''
+    const filename = `思维导图_${title?.slice(0, 30) || 'paper'}`
+
+    if (format === 'json') {
+      content = JSON.stringify(analysis_json.outline, null, 2)
+      const blob = new Blob([content], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${filename}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+    } else if (format === 'markdown') {
+      // 递归生成 Markdown
+      const generateMarkdown = (items, level = 1) => {
+        let md = ''
+        const prefix = '#'.repeat(level + 1)
+        for (const item of items) {
+          md += `${prefix} ${item.title}\n`
+          if (item.children && item.children.length > 0) {
+            md += generateMarkdown(item.children, level + 1)
+          }
+        }
+        return md
+      }
+      content = `# ${title || '论文思维导图'}\n\n${generateMarkdown(analysis_json.outline)}`
+      const blob = new Blob([content], { type: 'text/markdown' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${filename}.md`
+      a.click()
+      URL.revokeObjectURL(url)
+    }
+  }
+
   // 格式化简短日期
   const formatShortDate = (dateStr) => {
     if (!dateStr) return '未知'
@@ -358,9 +398,27 @@ export default function PaperDetail() {
 
         {/* 卡片3：思维导图/论文大纲 */}
         <div className="bg-white rounded-xl shadow-sm p-6">
-          <h2 className="text-xl font-bold mb-4 pb-2 border-b border-gray-200">
-            思维导图
-          </h2>
+          <div className="flex justify-between items-center mb-4 pb-2 border-b border-gray-200">
+            <h2 className="text-xl font-bold">
+              思维导图
+            </h2>
+            {analysis_json?.outline && (
+              <div className="flex gap-2">
+                <button
+                  onClick={() => downloadOutline('markdown')}
+                  className="text-sm px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+                >
+                  导出 Markdown
+                </button>
+                <button
+                  onClick={() => downloadOutline('json')}
+                  className="text-sm px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+                >
+                  导出 JSON
+                </button>
+              </div>
+            )}
+          </div>
           {analysis_json?.outline ? (
             <OutlineTree outline={analysis_json.outline} paperTitle={title} />
           ) : (
