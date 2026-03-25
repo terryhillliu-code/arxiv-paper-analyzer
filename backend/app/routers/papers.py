@@ -51,10 +51,11 @@ async def get_papers(
     search: Optional[str] = Query(None, description="搜索关键词"),
     categories: Optional[str] = Query(None, description="分类，逗号分隔"),
     tags: Optional[str] = Query(None, description="标签，逗号分隔"),
+    tier: Optional[str] = Query(None, description="Tier等级: A, B, C"),
     date_from: Optional[datetime] = Query(None, description="开始日期"),
     date_to: Optional[datetime] = Query(None, description="结束日期"),
     has_analysis: Optional[bool] = Query(None, description="是否有分析"),
-    sort_by: Optional[str] = Query(None, description="排序方式: newest, oldest, views"),
+    sort_by: Optional[str] = Query(None, description="排序方式: newest, oldest, views, tier"),
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(20, ge=1, le=100, description="每页数量"),
     db: AsyncSession = Depends(get_db),
@@ -109,6 +110,10 @@ async def get_papers(
     if has_analysis is not None:
         query = query.where(Paper.has_analysis == has_analysis)
 
+    # Tier 筛选
+    if tier:
+        query = query.where(Paper.tier == tier.upper())
+
     # 计算总数
     count_query = select(func.count()).select_from(query.subquery())
     total_result = await db.execute(count_query)
@@ -121,6 +126,16 @@ async def get_papers(
         query = query.order_by(Paper.view_count.desc())
     elif sort_by == "newest":
         query = query.order_by(Paper.publish_date.desc())
+    elif sort_by == "tier":
+        # 按 Tier 排序：A > B > C > NULL
+        query = query.order_by(
+            func.CASE(
+                (Paper.tier == "A", 1),
+                (Paper.tier == "B", 2),
+                (Paper.tier == "C", 3),
+                else_=4
+            )
+        )
     else:
         # 默认：按 ID 降序
         query = query.order_by(Paper.id.desc())
