@@ -71,18 +71,41 @@ class PDFService:
             logger.info(f"PDF 已存在: {pdf_path}")
             return str(pdf_path)
 
+        # 镜像源列表（优先使用国内镜像）
+        mirror_urls = [
+            pdf_url,  # 原始 URL
+            pdf_url.replace("https://arxiv.org", "https://cn.arxiv.org"),  # 国内镜像
+        ]
+
         try:
-            # 使用 httpx 下载 PDF
-            async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-                logger.info(f"开始下载 PDF: {pdf_url}")
-                response = await client.get(pdf_url)
-                response.raise_for_status()
+            # 使用 httpx 下载 PDF（增加超时和重试）
+            async with httpx.AsyncClient(
+                timeout=300.0,  # 5 分钟超时
+                follow_redirects=True,
+                limits=httpx.Limits(max_connections=10)  # 允许更多连接
+            ) as client:
+                # 尝试多个镜像源
+                for i, url in enumerate(mirror_urls):
+                    try:
+                        logger.info(f"开始下载 PDF (镜像{i+1}): {url}")
 
-                # 保存到本地
-                pdf_path.write_bytes(response.content)
-                logger.info(f"PDF 下载成功: {pdf_path}")
+                        # 流式下载，避免内存问题
+                        async with client.stream("GET", url) as response:
+                            response.raise_for_status()
 
-                return str(pdf_path)
+                            # 保存到本地
+                            with open(pdf_path, "wb") as f:
+                                async for chunk in response.aiter_bytes(chunk_size=8192):
+                                    f.write(chunk)
+
+                        logger.info(f"PDF 下载成功: {pdf_path}")
+                        return str(pdf_path)
+
+                    except Exception as e:
+                        logger.warning(f"镜像{i+1}下载失败: {e}")
+                        if i == len(mirror_urls) - 1:
+                            raise
+                        continue
 
         except Exception as e:
             logger.error(f"下载 PDF 失败: {pdf_url}, 错误: {e}", exc_info=True)
