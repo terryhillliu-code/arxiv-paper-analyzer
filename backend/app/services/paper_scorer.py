@@ -20,8 +20,8 @@ class PaperScorer:
     - 创新信号 (20分): 标题中的创新关键词
 
     筛选规则：
-    - 总分 >= 40: 入库并分析
-    - 总分 < 40: 跳过不入库
+    - 总分 >= 35: 入库并分析
+    - 总分 < 35: 跳过不入库
     """
 
     # 顶级科技公司
@@ -154,7 +154,7 @@ class PaperScorer:
         title: str,
         abstract: str,
         authors: Optional[List[str]] = None,
-        threshold: int = 40,
+        threshold: int = 35,
     ) -> bool:
         """判断是否应该抓取该论文。
 
@@ -296,7 +296,7 @@ def should_fetch_paper(
     title: str,
     abstract: str,
     authors: Optional[List[str]] = None,
-    threshold: int = 40,
+    threshold: int = 35,
 ) -> bool:
     """判断是否抓取论文的便捷函数。"""
     return PaperScorer.should_fetch(title, abstract, authors, threshold)
