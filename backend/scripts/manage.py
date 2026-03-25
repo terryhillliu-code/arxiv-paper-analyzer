@@ -46,21 +46,30 @@ async def cmd_analyze(args):
 
     semaphore = asyncio.Semaphore(args.parallel)
 
+    # 日期过滤
+    from datetime import datetime, timedelta
+    date_filter = None
+    if args.days > 0:
+        date_filter = datetime.now() - timedelta(days=args.days)
+        logger.info(f"📅 仅分析 {args.days} 天内的论文 (>= {date_filter.strftime('%Y-%m-%d')})")
+
     # 阶段 1：快速模式评估
     if not args.skip_quick:
         async with async_session_maker() as db:
             query = select(Paper).where(Paper.has_analysis == False)
+            if date_filter:
+                query = query.where(Paper.publish_date >= date_filter)
             if not args.no_sort:
                 query = query.order_by(Paper.citation_count.desc().nulls_last())
             else:
                 query = query.order_by(Paper.publish_date.desc())
-            
+
             result = await db.execute(query)
             papers = result.scalars().all()
 
         if args.min_citations > 0:
             papers = [p for p in papers if (p.citation_count or 0) >= args.min_citations]
-        
+
         if args.top_n > 0:
             papers = papers[:args.top_n]
 
@@ -80,9 +89,10 @@ async def cmd_analyze(args):
     # 阶段 2：完整模式分析 (Tier A)
     if not args.quick_only:
         async with async_session_maker() as db:
-            result = await db.execute(
-                select(Paper).where(Paper.tier == 'A', Paper.full_analysis == False)
-            )
+            query = select(Paper).where(Paper.tier == 'A', Paper.full_analysis == False)
+            if date_filter:
+                query = query.where(Paper.publish_date >= date_filter)
+            result = await db.execute(query)
             tier_a_papers = result.scalars().all()
 
         logger.info(f"【阶段2】Tier A 完整模式分析: {len(tier_a_papers)} 篇")
@@ -378,6 +388,8 @@ def main():
     p_analyze.add_argument("--skip-quick", action="store_true", help="跳过快速分析阶段")
     p_analyze.add_argument("--quick-only", action="store_true", help="仅执行快速分析")
     p_analyze.add_argument("--no-sort", action="store_true", help="不按引用数排序")
+    p_analyze.add_argument("--days", type=int, default=0, help="仅分析最近 N 天的论文 (0=全部)")
+    p_analyze.add_argument("--tier-a-only", action="store_true", help="仅对 Tier A 执行完整分析")
 
     # verify
     p_verify = subparsers.add_parser("verify", help="检测分析质量")

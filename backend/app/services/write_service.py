@@ -20,6 +20,7 @@ class WriteTask:
     analysis_report: str
     analysis_json: Dict[str, Any]
     tier: Optional[str] = None
+    summary: Optional[str] = None  # 一段话总结
     action_items: Optional[list] = None
     knowledge_links: Optional[list] = None
     tags: Optional[list] = None
@@ -144,6 +145,8 @@ class DatabaseWriteService:
                 # 更新扩展字段
                 if task.tier:
                     paper.tier = task.tier
+                if task.summary:
+                    paper.summary = task.summary
                 if task.action_items:
                     paper.action_items = task.action_items
                 if task.knowledge_links:

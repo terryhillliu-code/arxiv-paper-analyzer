@@ -95,6 +95,7 @@ class PaperAnalyzer:
                     analysis_report=report,
                     analysis_json=analysis_json,
                     tier=analysis_json.get("tier"),
+                    summary=analysis_json.get("one_line_summary"),
                     tags=analysis_json.get("tags"),
                     md_output_path=export_result.get("md_path"),
                     full_analysis=not quick_mode

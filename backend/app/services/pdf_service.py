@@ -125,7 +125,21 @@ class PDFService:
             提取的文本内容
         """
         try:
-            doc = fitz.open(pdf_path)
+            # 抑制 MuPDF 警告
+            import sys
+            import os
+            old_stderr = os.dup(2)
+            devnull = os.open('/dev/null', os.O_WRONLY)
+            os.dup2(devnull, 2)
+
+            try:
+                doc = fitz.open(pdf_path)
+            finally:
+                # 恢复 stderr
+                os.dup2(old_stderr, 2)
+                os.close(devnull)
+                os.close(old_stderr)
+
             text_parts = []
             page_count = min(len(doc), max_pages)
 
