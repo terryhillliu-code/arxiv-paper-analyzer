@@ -36,6 +36,14 @@ const TAG_OPTIONS = [
   { value: '故障诊断', label: '故障诊断' },
 ]
 
+// Tier 等级选项
+const TIER_OPTIONS = [
+  { value: null, label: '全部' },
+  { value: 'A', label: 'Tier A (顶尖)' },
+  { value: 'B', label: 'Tier B (有价值)' },
+  { value: 'C', label: 'Tier C (一般参考)' },
+]
+
 export default function PaperList() {
   // 数据状态
   const [papers, setPapers] = useState([])
@@ -53,6 +61,7 @@ export default function PaperList() {
   const [search, setSearch] = useState('')
   const [selectedCategory, setSelectedCategory] = useState(null)
   const [selectedTag, setSelectedTag] = useState(null)
+  const [selectedTier, setSelectedTier] = useState(null)
   const [dateFrom, setDateFrom] = useState('')
   const [sortBy, setSortBy] = useState(null)  // null: 显示所有, 'newest': 最新发布
   const [page, setPage] = useState(1)
@@ -69,6 +78,7 @@ export default function PaperList() {
       if (search) params.search = search
       if (selectedCategory) params.categories = selectedCategory
       if (selectedTag) params.tags = selectedTag
+      if (selectedTier) params.tier = selectedTier
       if (sortBy) params.sort_by = sortBy  // 只在设置了排序时才传递
       if (dateFrom) {
         // 选择日期时，同时设置 date_from 和 date_to，精确匹配当天
@@ -86,7 +96,7 @@ export default function PaperList() {
     } finally {
       setLoading(false)
     }
-  }, [search, selectedCategory, selectedTag, dateFrom, sortBy, page])
+  }, [search, selectedCategory, selectedTag, selectedTier, dateFrom, sortBy, page])
 
   // 加载统计数据
   const loadStats = useCallback(async () => {
@@ -123,6 +133,12 @@ export default function PaperList() {
   // 标签选择
   const handleTagSelect = (value) => {
     setSelectedTag(value)
+    setPage(1)
+  }
+
+  // Tier 选择
+  const handleTierSelect = (value) => {
+    setSelectedTier(value)
     setPage(1)
   }
 
@@ -234,6 +250,26 @@ export default function PaperList() {
                   className={`rounded-full px-4 py-1.5 text-sm transition-colors ${
                     selectedTag === opt.value
                       ? 'bg-gray-800 text-white'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Tier 筛选 */}
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className="text-sm font-bold text-gray-500">
+                TIER
+              </span>
+              {TIER_OPTIONS.map((opt) => (
+                <button
+                  key={opt.label}
+                  onClick={() => handleTierSelect(opt.value)}
+                  className={`rounded-full px-4 py-1.5 text-sm transition-colors ${
+                    selectedTier === opt.value
+                      ? 'bg-purple-600 text-white'
                       : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                   }`}
                 >

@@ -22,6 +22,13 @@ const CATEGORY_COLORS = {
 // 默认颜色
 const DEFAULT_COLOR = 'bg-gray-100 text-gray-600'
 
+// Tier 颜色映射
+const TIER_COLORS = {
+  'A': 'bg-red-500 text-white',
+  'B': 'bg-yellow-500 text-white',
+  'C': 'bg-gray-400 text-white',
+}
+
 export default function PaperCard({ paper, index }) {
   if (!paper) return null
 
@@ -35,6 +42,7 @@ export default function PaperCard({ paper, index }) {
     tags = [],
     institutions = [],
     has_analysis = false,
+    tier,
   } = paper
 
   // 格式化日期
@@ -64,6 +72,13 @@ export default function PaperCard({ paper, index }) {
         <span className="text-2xl text-gray-300 font-bold">
           {index}
         </span>
+
+        {/* Tier 标签 */}
+        {tier && (
+          <span className={`px-2 py-0.5 text-xs font-bold rounded-full ${TIER_COLORS[tier] || 'bg-gray-200 text-gray-600'}`}>
+            {tier}
+          </span>
+        )}
 
         {/* 学科分类标签 */}
         <div className="flex flex-wrap gap-1.5">
