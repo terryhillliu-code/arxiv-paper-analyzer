@@ -67,7 +67,7 @@ async def get_papers(
     # 构建基础查询
     query = select(Paper)
 
-    # 搜索条件：在 title, abstract, summary 中模糊搜索
+    # 搜索条件：在 title, abstract, summary, authors 中模糊搜索
     if search:
         search_pattern = f"%{search}%"
         query = query.where(
@@ -75,6 +75,7 @@ async def get_papers(
                 Paper.title.ilike(search_pattern),
                 Paper.abstract.ilike(search_pattern),
                 Paper.summary.ilike(search_pattern),
+                Paper.authors.like(search_pattern),  # 作者搜索（JSON数组）
             )
         )
 
