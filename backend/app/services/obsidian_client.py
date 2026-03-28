@@ -4,19 +4,28 @@
 """
 
 import httpx
+import logging
+import subprocess
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+from app.config import get_settings
+
+logger = logging.getLogger(__name__)
+
+# 获取全局配置
+settings = get_settings()
 
 
 class ObsidianClient:
     """Obsidian 导出服务客户端。"""
 
-    def __init__(self, base_url: str = "http://127.0.0.1:8766"):
+    def __init__(self, base_url: Optional[str] = None):
         """初始化客户端。
 
         Args:
-            base_url: zhiwei-obsidian 服务地址
+            base_url: zhiwei-obsidian 服务地址 (默认从配置读取)
         """
-        self.base_url = base_url
+        self.base_url = base_url or settings.obsidian_service_url
         self.timeout = 30.0
 
     def is_available(self) -> bool:
@@ -124,6 +133,8 @@ class ObsidianClient:
                     "authors": paper_data.get("authors", []),
                     "one_line_summary": analysis_json.get("one_line_summary", "") if analysis_json else "",
                     "action_items": analysis_json.get("action_items", []) if analysis_json else [],
+                    "ingest_quality": analysis_json.get("ingest_quality", "Bronze") if analysis_json else "Bronze",
+                    "parser_used": analysis_json.get("parser_used", "abstract_only") if analysis_json else "abstract_only",
                 },
                 "content": {
                     "report": report,
@@ -145,6 +156,8 @@ class ObsidianClient:
                     "one_line_summary": one_line_summary,
                     "knowledge_links": knowledge_links or [],
                     "action_items": action_items or [],
+                    "ingest_quality": ingest_quality or "Bronze",
+                    "parser_used": parser_used or "abstract_only",
                 },
                 "content": {
                     "report": report,
@@ -164,8 +177,29 @@ class ObsidianClient:
             result = response.json()
 
             if result.get("success"):
+                md_path = result.get("md_path", "")
+                
+                # [Research V4.0] 异步触发零延迟增量入库
+                if md_path:
+                    try:
+                        # 从配置读取路径 (Phase 3 重构)
+                        v_py = settings.rag_python_path
+                        # 假设增量入库脚本与 bridge.py 同级目录或在配置中定义
+                        # 之前代码写的是 zhiwei-rag/scripts/ingest_incremental.py
+                        # 为了保持灵活性，我们使用配置中的基础路径推导
+                        v_sc = os.path.join(os.path.dirname(settings.rag_bridge_path), "scripts/ingest_incremental.py")
+                        
+                        if Path(v_py).exists() and Path(v_sc).exists():
+                            logger.info(f"🚀 已触发零延迟增量入库: {md_path}")
+                            subprocess.Popen([v_py, v_sc, "--file", md_path], 
+                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        else:
+                            logger.warning(f"⚠️ 无法触发增量入库：环境或脚本不存在 ({v_py})")
+                    except Exception as e:
+                        logger.error(f"❌ 触发增量入库失败: {e}")
+
                 return {
-                    "md_path": result.get("md_path", ""),
+                    "md_path": md_path,
                     "pdf_path": result.get("attachment_path"),
                     "success": True,
                 }
@@ -225,8 +259,20 @@ class ObsidianClient:
             result = response.json()
 
             if result.get("success"):
+                md_path = result.get("md_path", "")
+                
+                # [Research V4.0] 异步触发零延迟增量入库
+                if md_path:
+                    try:
+                        v_py = settings.rag_python_path
+                        v_sc = os.path.join(os.path.dirname(settings.rag_bridge_path), "scripts/ingest_incremental.py")
+                        subprocess.Popen([v_py, v_sc, "--file", md_path], 
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    except Exception:
+                        pass
+
                 return {
-                    "md_path": result.get("md_path", ""),
+                    "md_path": md_path,
                     "jd_dir": result.get("jd_dir", ""),
                     "success": True,
                 }
@@ -274,8 +320,20 @@ class ObsidianClient:
             result = response.json()
 
             if result.get("success"):
+                md_path = result.get("md_path", "")
+                
+                # [Research V4.0] 异步触发零延迟增量入库
+                if md_path:
+                    try:
+                        v_py = settings.rag_python_path
+                        v_sc = os.path.join(os.path.dirname(settings.rag_bridge_path), "scripts/ingest_incremental.py")
+                        subprocess.Popen([v_py, v_sc, "--file", md_path], 
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    except Exception:
+                        pass
+
                 return {
-                    "md_path": result.get("md_path", ""),
+                    "md_path": md_path,
                     "jd_dir": result.get("jd_dir", ""),
                     "success": True,
                 }

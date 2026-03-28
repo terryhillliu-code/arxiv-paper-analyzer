@@ -94,6 +94,20 @@ class Settings(BaseSettings):
         description="MinerU CLI 路径"
     )
 
+    # 外部服务集成配置 (Phase 3)
+    rag_python_path: str = Field(
+        default="/Users/liufang/zhiwei-rag/venv/bin/python3",
+        description="RAG 虚拟环境 Python 路径"
+    )
+    rag_bridge_path: str = Field(
+        default="/Users/liufang/zhiwei-rag/bridge.py",
+        description="RAG bridge 脚本路径"
+    )
+    obsidian_service_url: str = Field(
+        default="http://127.0.0.1:8766",
+        description="Obsidian 导出服务地址"
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:

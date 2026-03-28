@@ -163,6 +163,8 @@ type: paper
 
 tags: {analysis_json.get('tags', [])}
 tier: {analysis_json.get('tier', 'B')}
+ingest_quality: {analysis_json.get('ingest_quality', 'Bronze')}
+parser_used: {analysis_json.get('parser_used', 'abstract_only')}
 methodology: "{analysis_json.get('methodology', '')}"
 
 related: {analysis_json.get('knowledge_links', [])}
@@ -201,7 +203,7 @@ overall_rating: {analysis_json.get('overall_rating', 'B')}
 
         return f"""# {title}
 
-> **内容等级**：{tier_text.get(tier, "⭐⭐ 实用向导")} | **综合评级**：{rating}
+> **内容等级**：{tier_text.get(tier, "⭐⭐ 实用向导")} | **综合评级**：{rating} | **解析质量**：{analysis_json.get('ingest_quality', 'Bronze')} ({analysis_json.get('parser_used', 'abstract_only')})
 
 ## 📋 基础信息
 

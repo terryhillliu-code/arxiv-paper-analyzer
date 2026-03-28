@@ -19,7 +19,7 @@ from typing import List, Optional, Set
 from fuzzywuzzy import fuzz
 
 # 添加项目根目录到路径
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(os.path.abspath(sys.argv[0])).parent.parent))
 
 from app.database import async_session_maker
 from app.models import Paper

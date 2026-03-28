@@ -16,12 +16,17 @@ from datetime import datetime
 from pathlib import Path
 
 import yaml
+from app.config import get_settings
+
 # 配置日志
 logger = logging.getLogger(__name__)
 
-# RAG 工具路径
-RAG_VENV = "/Users/liufang/zhiwei-rag/venv/bin/python3"
-RAG_BRIDGE = "/Users/liufang/zhiwei-rag/bridge.py"
+# 获取全局配置
+settings = get_settings()
+
+# RAG 工具路径 (从配置读取，支持 Phase 3 重构)
+RAG_VENV = settings.rag_python_path
+RAG_BRIDGE = settings.rag_bridge_path
 
 
 class IDataNormalizer(ABC):

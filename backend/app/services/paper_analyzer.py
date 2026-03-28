@@ -41,18 +41,30 @@ class PaperAnalyzer:
             try:
                 # 1. 准备内容
                 content = paper.abstract or ""
+                metadata = {"parser": "abstract_only"}
+                
                 if not quick_mode:
                     if not paper.pdf_url:
                         logger.warning(f"论文 {paper.id} 无 PDF URL，跳过完整分析")
                         return False
                     
-                    # 下载并提取 PDF 文本
-                    pdf_text = await PDFService.get_paper_text(paper.pdf_url, paper.arxiv_id or str(paper.id))
-                    if pdf_text:
-                        content = pdf_text
-                    else:
-                        logger.warning(f"论文 {paper.id} PDF 提取失败，回退到摘要分析")
+                    # 使用 get_paper_content 替代 get_paper_text，支持 MinerU
+                    from app.services.pdf_service import pdf_service
+                    content, metadata = await pdf_service.get_paper_content(
+                        paper.pdf_url, 
+                        paper.arxiv_id or str(paper.id),
+                        mode="mineru"
+                    )
+                    
+                    if not content or content == paper.abstract:
+                        logger.warning(f"论文 {paper.id} PDF 提取失败或无内容，回退到摘要分析")
+                        metadata["parser"] = "abstract_fallback"
                 
+                # 确定解析质量
+                parser_used = metadata.get("parser", "unknown")
+                ingest_quality = "Gold" if parser_used == "mineru" else "Silver" if parser_used == "pymupdf" else "Bronze"
+                logger.info(f"📊 解析质量统计: {paper.id} quality={ingest_quality} parser={parser_used}")
+
                 # 2. 调用 AI 分析
                 result = await ai_service.generate_deep_analysis(
                     title=paper.title,
@@ -73,6 +85,10 @@ class PaperAnalyzer:
                 if not report or not analysis_json:
                     logger.error(f"分析失败 {paper.id}: AI 未返回有效结果")
                     return False
+
+                # 注入解析质量到 JSON，供后续生成 Markdown 使用
+                analysis_json["ingest_quality"] = ingest_quality
+                analysis_json["parser_used"] = parser_used
 
                 # 3. 生成 Markdown
                 export_result = self.generator._local_generate_paper_md(

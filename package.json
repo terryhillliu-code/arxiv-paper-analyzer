@@ -1,0 +1,12 @@
+{
+  "name": "arxiv-paper-analyzer-workspace",
+  "version": "1.0.0",
+  "description": "ArXiv Paper Intelligent Analysis Platform",
+  "private": true,
+  "scripts": {
+    "start:backend": "cd backend && ./venv/bin/python run.py",
+    "start:frontend": "cd frontend && npm run dev",
+    "build:deploy": "cd frontend && npm run build && rm -rf ../backend/static/* && cp -r dist/* ../backend/static/",
+    "install:all": "cd backend && python3 -m venv venv && ./venv/bin/pip install -r requirements.txt && cd ../frontend && npm install"
+  }
+}
