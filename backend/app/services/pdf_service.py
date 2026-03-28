@@ -42,12 +42,13 @@ class PDFService:
         logger.info(f"MinerU 缓存目录: {cache_dir}")
 
     @staticmethod
-    async def download_pdf(pdf_url: str, arxiv_id: str) -> str:
+    async def download_pdf(pdf_url: str, arxiv_id: str, max_size_mb: int = 20) -> str:
         """下载 PDF 文件到本地。
 
         Args:
             pdf_url: PDF 下载链接
             arxiv_id: arXiv 论文 ID
+            max_size_mb: 最大允许的文件大小（MB），超过则跳过
 
         Returns:
             本地 PDF 文件路径
@@ -71,44 +72,89 @@ class PDFService:
             logger.info(f"PDF 已存在: {pdf_path}")
             return str(pdf_path)
 
-        # 镜像源列表（优先使用国内镜像）
+        # 镜像源列表
         mirror_urls = [
-            pdf_url,  # 原始 URL
-            pdf_url.replace("https://arxiv.org", "https://cn.arxiv.org"),  # 国内镜像
+            pdf_url,  # 原始 URL（最稳定）
         ]
 
+        # 重试配置
+        MAX_RETRIES = 2
+        DOWNLOAD_TIMEOUT = 120  # 单文件最多 2 分钟
+
         try:
-            # 使用 httpx 下载 PDF（增加超时和重试）
             async with httpx.AsyncClient(
-                timeout=300.0,  # 5 分钟超时
+                timeout=httpx.Timeout(connect=30.0, read=DOWNLOAD_TIMEOUT, write=30.0, pool=30.0),
                 follow_redirects=True,
-                limits=httpx.Limits(max_connections=10)  # 允许更多连接
+                limits=httpx.Limits(max_connections=5)
             ) as client:
-                # 尝试多个镜像源
-                for i, url in enumerate(mirror_urls):
-                    try:
-                        logger.info(f"开始下载 PDF (镜像{i+1}): {url}")
+                for url in mirror_urls:
+                    for attempt in range(MAX_RETRIES):
+                        try:
+                            logger.info(f"开始下载 PDF (尝试 {attempt+1}/{MAX_RETRIES}): {url}")
 
-                        # 流式下载，避免内存问题
-                        async with client.stream("GET", url) as response:
-                            response.raise_for_status()
+                            # 先发送 HEAD 请求检查文件大小
+                            try:
+                                head_resp = await client.head(url)
+                                content_length = head_resp.headers.get('content-length')
+                                if content_length:
+                                    size_mb = int(content_length) / (1024 * 1024)
+                                    if size_mb > max_size_mb:
+                                        logger.warning(f"PDF 文件过大 ({size_mb:.1f}MB > {max_size_mb}MB)，跳过下载: {arxiv_id}")
+                                        raise RuntimeError(f"PDF 文件过大 ({size_mb:.1f}MB)，跳过")
+                                    logger.info(f"PDF 大小: {size_mb:.1f}MB")
+                            except Exception as e:
+                                logger.debug(f"HEAD 请求失败，直接下载: {e}")
 
-                            # 保存到本地
-                            with open(pdf_path, "wb") as f:
-                                async for chunk in response.aiter_bytes(chunk_size=8192):
-                                    f.write(chunk)
+                            # 下载文件
+                            start_time = asyncio.get_event_loop().time()
+                            downloaded = 0
 
-                        logger.info(f"PDF 下载成功: {pdf_path}")
-                        return str(pdf_path)
+                            async with client.stream("GET", url) as response:
+                                if response.status_code == 429:
+                                    logger.warning(f"触发 ArXiv 限流 (429)，等待重试...")
+                                    raise httpx.HTTPStatusError("429 Too Many Requests", request=response.request, response=response)
 
-                    except Exception as e:
-                        logger.warning(f"镜像{i+1}下载失败: {e}")
-                        if i == len(mirror_urls) - 1:
-                            raise
-                        continue
+                                response.raise_for_status()
+
+                                # 保存到本地（带进度监控）
+                                with open(pdf_path, "wb") as f:
+                                    async for chunk in response.aiter_bytes(chunk_size=65536):  # 64KB chunks
+                                        f.write(chunk)
+                                        downloaded += len(chunk)
+
+                                        # 检查是否超时
+                                        elapsed = asyncio.get_event_loop().time() - start_time
+                                        if elapsed > DOWNLOAD_TIMEOUT:
+                                            logger.warning(f"下载超时 ({elapsed:.0f}s)，终止: {arxiv_id}")
+                                            raise TimeoutError(f"下载超时 ({elapsed:.0f}s)")
+
+                                        # 检查大小
+                                        if downloaded > max_size_mb * 1024 * 1024:
+                                            logger.warning(f"下载超过大小限制，终止: {arxiv_id}")
+                                            raise RuntimeError(f"下载超过大小限制 ({max_size_mb}MB)")
+
+                            elapsed = asyncio.get_event_loop().time() - start_time
+                            speed = downloaded / elapsed / 1024 if elapsed > 0 else 0
+                            logger.info(f"PDF 下载成功: {pdf_path} ({downloaded/1024/1024:.1f}MB, {speed:.0f}KB/s)")
+                            return str(pdf_path)
+
+                        except (httpx.HTTPError, TimeoutError, RuntimeError) as e:
+                            logger.warning(f"下载尝试 {attempt+1} 失败: {e}")
+                            # 清理部分下载的文件
+                            if pdf_path.exists():
+                                pdf_path.unlink()
+                            if attempt < MAX_RETRIES - 1:
+                                await asyncio.sleep(2)
+                            else:
+                                logger.error(f"该镜像源 {url} 已达到最大重试次数")
+
+                raise RuntimeError(f"所有镜像源下载均失败: {pdf_url}")
 
         except Exception as e:
-            logger.error(f"下载 PDF 失败: {pdf_url}, 错误: {e}", exc_info=True)
+            logger.error(f"最终下载 PDF 失败: {pdf_url}, 错误: {e}")
+            # 清理部分下载的文件
+            if pdf_path.exists():
+                pdf_path.unlink()
             raise
 
     @staticmethod
@@ -254,76 +300,105 @@ class PDFService:
         env["OBJC_DISABLE_INITIALIZE_FORK_SAFETY"] = "YES"
         env["NO_AT_BRIDGE"] = "1"
 
+        # === 新增：进程级并发控制 (V4.2) ===
+        import fcntl
+        lock_file_path = Path("/tmp/zhiwei-mineru.lock")
+        
         try:
-            # 异步执行子进程
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
-            )
+            # 确保锁文件存在
+            lock_file_path.touch(exist_ok=True)
+            lock_file = open(lock_file_path, "w")
+            
+            logger.info(f"⏳ 正在请求 MinerU 进程锁 (PID: {os.getpid()})...")
+            # 阻塞获取排他锁
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            logger.info(f"🔐 已锁定 MinerU 资源，开始解析: {pdf_path.name}")
+            
+            try:
+                # 异步执行子进程
+                process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env,
+                )
 
-            # 动态超时：根据文件大小调整（优先使用 MinerU，延长超时）
-            file_size_mb = pdf_path.stat().st_size / (1024 * 1024)
-            if file_size_mb < 2:
-                timeout = 600  # 小文件 10 分钟
-            elif file_size_mb < 5:
-                timeout = 900  # 中等文件 15 分钟
-            elif file_size_mb < 10:
-                timeout = 1500  # 较大文件 25 分钟
-            else:
-                timeout = 2400  # 大文件 40 分钟
+                # 动态超时：根据文件大小调整（优先使用 MinerU，延长超时）
+                file_size_mb = pdf_path.stat().st_size / (1024 * 1024)
+                if file_size_mb < 2:
+                    timeout = 600  # 小文件 10 分钟
+                elif file_size_mb < 5:
+                    timeout = 900  # 中等文件 15 分钟
+                elif file_size_mb < 10:
+                    timeout = 1500  # 较大文件 25 分钟
+                else:
+                    timeout = 2400  # 大文件 40 分钟
 
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(),
-                timeout=timeout
-            )
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(),
+                    timeout=timeout
+                )
 
-            # 检查输出文件（即使有警告也继续）
-            md_files = list(output_dir.rglob("*.md"))
+                # 检查输出文件（即使有警告也继续）
+                md_files = list(output_dir.rglob("*.md"))
 
-            # 只有在真正失败且没有输出时才报错
-            if process.returncode != 0 and not md_files:
-                error_msg = stderr.decode() if stderr else "Unknown error"
-                # 忽略 FFmpeg 库冲突警告
-                if "AVFFrameReceiver" not in error_msg and "AVFAudioReceiver" not in error_msg:
-                    raise RuntimeError(f"MinerU 返回非零: {error_msg[:500]}")
-                logger.warning(f"MinerU 有警告但继续: {error_msg[:200]}")
-            if not md_files:
-                raise RuntimeError("MinerU 未生成 Markdown 文件")
+                # 只有在真正失败且没有输出时才报错
+                if process.returncode != 0 and not md_files:
+                    error_msg = stderr.decode() if stderr else "Unknown error"
+                    # 忽略 FFmpeg 库冲突警告
+                    if "AVFFrameReceiver" not in error_msg and "AVFAudioReceiver" not in error_msg:
+                        raise RuntimeError(f"MinerU 返回非零: {error_msg[:500]}")
+                    logger.warning(f"MinerU 有警告但继续: {error_msg[:200]}")
+                if not md_files:
+                    raise RuntimeError("MinerU 未生成 Markdown 文件")
 
-            md_file = md_files[0]
-            md_content = md_file.read_text(encoding="utf-8")
+                md_file = md_files[0]
+                md_content = md_file.read_text(encoding="utf-8")
 
-            # 收集元数据
-            metadata = {
-                "source": str(pdf_path.name),
-                "parser": "mineru",
-                "headings": md_content.count("\n# "),
-                "tables": md_content.count("|---|"),
-                "formulas": md_content.count("$"),
-                "images": len(list(output_dir.rglob("*.png"))),
-                "chars": len(md_content),
-            }
+                # 收集元数据
+                metadata = {
+                    "source": str(pdf_path.name),
+                    "parser": "mineru",
+                    "headings": md_content.count("\n# "),
+                    "tables": md_content.count("|---|"),
+                    "formulas": md_content.count("$"),
+                    "images": len(list(output_dir.rglob("*.png"))),
+                    "chars": len(md_content),
+                }
 
-            # 保留图片目录（如果有的话）
-            images_dir = output_dir / "images"
-            if images_dir.exists():
-                target_images_dir = Path(self.settings.mineru_cache_dir) / f"{cache_key}_images"
-                if target_images_dir.exists():
-                    shutil.rmtree(target_images_dir)
-                shutil.move(str(images_dir), str(target_images_dir))
-                metadata["images_dir"] = str(target_images_dir)
+                # 保留图片目录（如果有的话）
+                images_dir = output_dir / "images"
+                if images_dir.exists():
+                    target_images_dir = Path(self.settings.mineru_cache_dir) / f"{cache_key}_images"
+                    if target_images_dir.exists():
+                        shutil.rmtree(target_images_dir)
+                    shutil.move(str(images_dir), str(target_images_dir))
+                    metadata["images_dir"] = str(target_images_dir)
 
-            # 清理临时目录
-            shutil.rmtree(output_dir, ignore_errors=True)
+                # 清理临时目录
+                shutil.rmtree(output_dir, ignore_errors=True)
 
-            return md_content, metadata
+                return md_content, metadata
 
-        except asyncio.TimeoutError:
-            raise RuntimeError(f"MinerU 解析超时 ({timeout}s, 文件 {file_size_mb:.1f}MB)")
-        except FileNotFoundError:
-            raise RuntimeError(f"MinerU 未找到: {self.settings.mineru_path}")
+            except asyncio.TimeoutError:
+                raise RuntimeError(f"MinerU 解析超时 ({timeout}s, 文件 {file_size_mb:.1f}MB)")
+            except FileNotFoundError:
+                raise RuntimeError(f"MinerU 未找到: {self.settings.mineru_path}")
+            finally:
+                # 释放锁
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                    lock_file.close()
+                    logger.debug(f"🔓 MinerU 资源锁已释放: {pdf_path.name}")
+                except:
+                    pass
+
+        except Exception as e:
+            # 捕获外部错误（如锁获取失败）
+            if "timeout" in str(e).lower():
+                raise
+            logger.error(f"MinerU 执行异常: {e}")
+            raise
 
     def _get_cache_key(self, pdf_path: Path) -> str:
         """基于文件内容生成缓存 key。
