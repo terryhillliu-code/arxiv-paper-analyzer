@@ -27,16 +27,12 @@ export default function App() {
       <div className="bg-white border-b border-gray-100">
         <div className="max-w-7xl mx-auto px-6">
           <div className="flex items-center gap-6 h-10">
-            <Link
-              to="/"
-              className={`text-sm transition-colors ${
-                !isHomePage
-                  ? 'text-gray-500 hover:text-gray-700'
-                  : 'text-gray-400 cursor-default'
-              }`}
+            <span
+              className="text-sm text-gray-400 cursor-not-allowed"
+              title="功能开发中"
             >
-              个人空间
-            </Link>
+              个人空间（开发中）
+            </span>
             <Link
               to="/"
               className={`text-sm transition-colors ${

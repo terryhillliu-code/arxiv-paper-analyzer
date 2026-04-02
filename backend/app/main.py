@@ -3,6 +3,7 @@
 配置应用生命周期、中间件和路由。
 """
 
+import os
 import logging
 import traceback
 from contextlib import asynccontextmanager
@@ -15,6 +16,7 @@ from fastapi.responses import JSONResponse
 from app.config import get_settings
 from app.database import init_db
 from app.routers import papers, tasks
+from app.middleware.rate_limit import RateLimitMiddleware
 
 # 配置日志
 logging.basicConfig(
@@ -22,6 +24,16 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# 安全配置：生产环境禁用 API 文档
+ENABLE_DOCS = os.getenv("ENABLE_DOCS", "false").lower() == "true"
+DOCS_URL = "/docs" if ENABLE_DOCS else None
+REDOC_URL = "/redoc" if ENABLE_DOCS else None
+
+# 速率限制配置
+RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "true").lower() == "true"
+RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "60"))
+RATE_LIMIT_PER_HOUR = int(os.getenv("RATE_LIMIT_PER_HOUR", "1000"))
 
 
 @asynccontextmanager
@@ -56,22 +68,36 @@ app = FastAPI(
     description="基于 Claude AI 的 ArXiv 论文智能分析与管理系统",
     version="1.0.0",
     lifespan=lifespan,
+    docs_url=DOCS_URL,
+    redoc_url=REDOC_URL,
 )
 
-# 添加 CORS 中间件
+# 添加 CORS 中间件（安全配置：仅允许本地访问）
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:5175",
         "http://localhost:3000",
         "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+        "http://127.0.0.1:5175",
         "http://127.0.0.1:3000",
-        "*",  # 允许所有来源（生产环境应限制）
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 添加速率限制中间件
+if RATE_LIMIT_ENABLED:
+    app.add_middleware(
+        RateLimitMiddleware,
+        requests_per_minute=RATE_LIMIT_PER_MINUTE,
+        requests_per_hour=RATE_LIMIT_PER_HOUR,
+    )
+    logger.info(f"速率限制已启用: {RATE_LIMIT_PER_MINUTE}/分钟, {RATE_LIMIT_PER_HOUR}/小时")
 
 # 注册路由
 app.include_router(papers.router)

@@ -32,9 +32,9 @@ class ResourceMonitor:
 
     def __init__(
         self,
-        max_cpu_percent: float = 98.0,  # ARM 架构可以更高
-        max_memory_percent: float = 95.0,
-        max_temperature: float = 95.0,  # ARM 可以更高温度
+        max_cpu_percent: float = 85.0,  # CPU 可以较高
+        max_memory_percent: float = 90.0,  # 内存阈值适当放宽
+        max_temperature: float = 85.0,  # 安全温度
         check_interval: float = 2.0,
     ):
         self.max_cpu_percent = max_cpu_percent
@@ -88,7 +88,8 @@ class ResourceMonitor:
         """获取 CPU 使用率"""
         try:
             import psutil
-            return psutil.cpu_percent(interval=0.5)
+            # 使用小 interval 获取准确的 CPU 使用率
+            return psutil.cpu_percent(interval=0.1)
         except ImportError:
             # 如果没有 psutil，使用系统命令
             if platform.system() == "Darwin":  # macOS
@@ -97,19 +98,15 @@ class ResourceMonitor:
                         ["top", "-l", "1", "-n", "0"],
                         capture_output=True,
                         text=True,
-                        timeout=5,
+                        timeout=3,
                     )
                     # 解析 top 输出中的 CPU 空闲率
                     for line in result.stdout.split("\n"):
                         if "CPU usage" in line:
-                            # "CPU usage: 5.26% user, 10.52% sys, 84.21% idle"
-                            # 或者 "CPU usage: 64.5% user, 18.75% sys, 16.74% idle"
                             parts = line.split(",")
                             for part in parts:
                                 if "idle" in part:
-                                    # 提取数字部分
                                     val = part.strip().split()[0]
-                                    # 移除可能的百分号
                                     val = val.rstrip("%")
                                     idle = float(val)
                                     return 100 - idle

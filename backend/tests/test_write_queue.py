@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from typing import Dict, Any, Optional
 from datetime import datetime
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 from app.database import async_session_maker, engine
@@ -199,6 +201,7 @@ async def worker(worker_id: int, paper_ids: list[int], results: list):
             logger.error(f"[Worker {worker_id}] 错误: {e}")
 
 
+@pytest.mark.asyncio
 async def test_concurrent_writes():
     """测试并发写入"""
     logger.info("=" * 60)

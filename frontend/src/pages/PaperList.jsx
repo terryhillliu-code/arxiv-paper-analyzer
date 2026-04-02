@@ -1,10 +1,13 @@
 import { useState, useEffect, useCallback } from 'react'
 import PaperCard from '../components/PaperCard'
+import { PaperListSkeleton, StatsSkeleton } from '../components/Skeleton'
 import {
   fetchPapers,
   fetchStats,
   fetchPapersByDateRange,
   generateSummaries,
+  fetchInstitutions,
+  fetchTierStats,
 } from '../api/papers'
 
 // 默认分页大小
@@ -56,15 +59,31 @@ export default function PaperList() {
   const [error, setError] = useState(null)
   const [fetching, setFetching] = useState(false)
   const [summarizing, setSummarizing] = useState(false)
+  const [operationMessage, setOperationMessage] = useState(null) // 操作结果消息
 
   // 筛选条件
   const [search, setSearch] = useState('')
   const [selectedCategory, setSelectedCategory] = useState(null)
   const [selectedTag, setSelectedTag] = useState(null)
   const [selectedTier, setSelectedTier] = useState(null)
+  const [selectedInstitution, setSelectedInstitution] = useState(null)
+  const [institutions, setInstitutions] = useState([])
   const [dateFrom, setDateFrom] = useState('')
   const [sortBy, setSortBy] = useState(null)  // null: 显示所有, 'newest': 最新发布
   const [page, setPage] = useState(1)
+
+  // 加载机构列表
+  useEffect(() => {
+    async function loadInstitutions() {
+      try {
+        const data = await fetchInstitutions(30)
+        setInstitutions(data.institutions || [])
+      } catch (err) {
+        console.error('加载机构失败:', err)
+      }
+    }
+    loadInstitutions()
+  }, [])
 
   // 加载论文列表
   const loadPapers = useCallback(async () => {
@@ -79,6 +98,7 @@ export default function PaperList() {
       if (selectedCategory) params.categories = selectedCategory
       if (selectedTag) params.tags = selectedTag
       if (selectedTier) params.tier = selectedTier
+      if (selectedInstitution) params.institution = selectedInstitution
       if (sortBy) params.sort_by = sortBy  // 只在设置了排序时才传递
       if (dateFrom) {
         // 选择日期时，同时设置 date_from 和 date_to，精确匹配当天
@@ -96,7 +116,7 @@ export default function PaperList() {
     } finally {
       setLoading(false)
     }
-  }, [search, selectedCategory, selectedTag, selectedTier, dateFrom, sortBy, page])
+  }, [search, selectedCategory, selectedTag, selectedTier, selectedInstitution, dateFrom, sortBy, page])
 
   // 加载统计数据
   const loadStats = useCallback(async () => {
@@ -163,13 +183,24 @@ export default function PaperList() {
   // 抓取论文（全量抓取昨天和今天）
   const handleFetch = async () => {
     setFetching(true)
+    setOperationMessage(null)
     try {
       const result = await fetchPapersByDateRange()
       console.log('抓取结果:', result)
+      setOperationMessage({
+        type: 'success',
+        text: `抓取成功：新增 ${result?.total_fetched || 0} 篇论文`
+      })
       loadPapers()
       loadStats()
+      // 3秒后自动清除消息
+      setTimeout(() => setOperationMessage(null), 3000)
     } catch (err) {
       console.error('抓取失败:', err)
+      setOperationMessage({
+        type: 'error',
+        text: `抓取失败: ${err.message}`
+      })
     } finally {
       setFetching(false)
     }
@@ -178,11 +209,22 @@ export default function PaperList() {
   // 生成摘要
   const handleSummarize = async () => {
     setSummarizing(true)
+    setOperationMessage(null)
     try {
-      await generateSummaries(10)
+      const result = await generateSummaries(10)
+      setOperationMessage({
+        type: 'success',
+        text: `摘要生成完成：成功 ${result?.success || 0} 篇，剩余 ${result?.remaining || 0} 篇待处理`
+      })
       loadPapers()
+      // 3秒后自动清除消息
+      setTimeout(() => setOperationMessage(null), 3000)
     } catch (err) {
       console.error('生成摘要失败:', err)
+      setOperationMessage({
+        type: 'error',
+        text: `摘要生成失败: ${err.message}`
+      })
     } finally {
       setSummarizing(false)
     }
@@ -277,28 +319,70 @@ export default function PaperList() {
                 </button>
               ))}
             </div>
+
+            {/* 机构筛选 */}
+            {institutions.length > 0 && (
+              <div className="flex items-center gap-3 flex-wrap">
+                <span className="text-sm font-bold text-gray-500">
+                  机构
+                </span>
+                <select
+                  value={selectedInstitution || ''}
+                  onChange={(e) => {
+                    setSelectedInstitution(e.target.value || null)
+                    setPage(1)
+                  }}
+                  className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm bg-white min-w-[200px]"
+                >
+                  <option value="">全部机构</option>
+                  {institutions.map((inst) => (
+                    <option key={inst.name} value={inst.name}>
+                      {inst.name} ({inst.count})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
 
           {/* 右侧：统计数字 */}
-          <div className="bg-white rounded-xl p-6 min-w-[200px]">
-            <div className="grid grid-cols-2 gap-6">
-              <div>
-                <p className="text-sm text-gray-500 mb-1">平台论文总量</p>
-                <p className="text-3xl font-bold text-purple-700">
-                  {stats?.total_papers || 0}
-                </p>
-                <p className="text-xs text-gray-400">篇</p>
-              </div>
-              <div>
-                <p className="text-sm text-gray-500 mb-1">当前筛选结果</p>
-                <p className="text-3xl font-bold text-gray-900">
-                  {totalResults}
-                </p>
-                <p className="text-xs text-gray-400">篇</p>
+          {stats ? (
+            <div className="bg-white rounded-xl p-6 min-w-[200px]">
+              <div className="grid grid-cols-2 gap-6">
+                <div>
+                  <p className="text-sm text-gray-500 mb-1">平台论文总量</p>
+                  <p className="text-3xl font-bold text-purple-700">
+                    {stats?.total_papers || 0}
+                  </p>
+                  <p className="text-xs text-gray-400">篇</p>
+                </div>
+                <div>
+                  <p className="text-sm text-gray-500 mb-1">当前筛选结果</p>
+                  <p className="text-3xl font-bold text-gray-900">
+                    {totalResults}
+                  </p>
+                  <p className="text-xs text-gray-400">篇</p>
+                </div>
               </div>
             </div>
-          </div>
+          ) : (
+            <StatsSkeleton />
+          )}
         </div>
+
+        {/* 操作结果消息 */}
+        {operationMessage && (
+          <div
+            className={`p-4 rounded-lg ${
+              operationMessage.type === 'success'
+                ? 'bg-green-50 border border-green-200 text-green-700'
+                : 'bg-red-50 border border-red-200 text-red-700'
+            }`}
+          >
+            {operationMessage.type === 'success' ? '✓ ' : '✗ '}
+            {operationMessage.text}
+          </div>
+        )}
 
         {/* 区域2：搜索和 FILTER 栏 */}
         <div className="space-y-3">
@@ -376,9 +460,7 @@ export default function PaperList() {
 
         {/* 区域3：论文列表 */}
         {loading ? (
-          <div className="flex justify-center py-12">
-            <div className="w-10 h-10 border-4 border-gray-200 border-t-purple-700 rounded-full animate-spin" />
-          </div>
+          <PaperListSkeleton count={5} />
         ) : error ? (
           <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
             加载失败: {error}

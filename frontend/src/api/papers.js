@@ -1,28 +1,118 @@
 const API_BASE = '/api'
 
+// 默认请求超时时间（毫秒）
+const DEFAULT_TIMEOUT = 30000 // 30秒
+
+// 重试配置
+const RETRY_CONFIG = {
+  maxRetries: 3,           // 最大重试次数
+  retryDelay: 1000,        // 初始重试延迟（毫秒）
+  retryDelayMultiplier: 2, // 重试延迟倍数
+  retryableErrors: [       // 可重试的错误类型
+    '请求超时',
+    '网络错误',
+    'Failed to fetch',
+    'NetworkError',
+    'ECONNRESET',
+    'ETIMEDOUT',
+  ],
+}
+
+/**
+ * 判断错误是否可重试
+ */
+function isRetryableError(error) {
+  const errorMessage = error.message || ''
+  return RETRY_CONFIG.retryableErrors.some(msg =>
+    errorMessage.includes(msg)
+  )
+}
+
+/**
+ * 延迟函数
+ */
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+/**
+ * 带超时的 fetch 请求
+ */
+async function fetchWithTimeout(url, options = {}, timeout = DEFAULT_TIMEOUT) {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), timeout)
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    })
+    return response
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
+/**
+ * 带重试的请求函数
+ */
+async function requestWithRetry(url, options = {}, timeout = DEFAULT_TIMEOUT, retryCount = 0) {
+  try {
+    const response = await fetchWithTimeout(url, options, timeout)
+
+    if (!response.ok) {
+      // 5xx 错误可重试
+      if (response.status >= 500 && retryCount < RETRY_CONFIG.maxRetries) {
+        const retryDelay = RETRY_CONFIG.retryDelay * Math.pow(RETRY_CONFIG.retryDelayMultiplier, retryCount)
+        console.log(`请求失败 (${response.status})，${retryDelay}ms 后重试 (${retryCount + 1}/${RETRY_CONFIG.maxRetries})`)
+        await delay(retryDelay)
+        return requestWithRetry(url, options, timeout, retryCount + 1)
+      }
+
+      const errorText = await response.text()
+      throw new Error(`HTTP ${response.status}: ${errorText}`)
+    }
+
+    return response.json()
+  } catch (err) {
+    // 处理超时错误
+    if (err.name === 'AbortError') {
+      const timeoutErr = new Error('请求超时，请检查网络连接或稍后重试')
+      timeoutErr.isTimeout = true
+      throw timeoutErr
+    }
+
+    // 判断是否可重试
+    if (isRetryableError(err) && retryCount < RETRY_CONFIG.maxRetries) {
+      const retryDelay = RETRY_CONFIG.retryDelay * Math.pow(RETRY_CONFIG.retryDelayMultiplier, retryCount)
+      console.log(`请求失败 (${err.message})，${retryDelay}ms 后重试 (${retryCount + 1}/${RETRY_CONFIG.maxRetries})`)
+      await delay(retryDelay)
+      return requestWithRetry(url, options, timeout, retryCount + 1)
+    }
+
+    throw err
+  }
+}
+
 /**
  * 通用请求函数
  * 自动添加 Content-Type 头，处理错误响应
+ * 支持超时设置和自动重试
  */
 async function request(path, options = {}) {
   const url = `${API_BASE}${path}`
+  const { timeout, ...fetchOptions } = options
 
   const headers = {
     'Content-Type': 'application/json',
-    ...options.headers,
+    ...fetchOptions.headers,
   }
 
-  const response = await fetch(url, {
-    ...options,
-    headers,
-  })
-
-  if (!response.ok) {
-    const errorText = await response.text()
-    throw new Error(`HTTP ${response.status}: ${errorText}`)
-  }
-
-  return response.json()
+  return requestWithRetry(
+    url,
+    { ...fetchOptions, headers },
+    timeout || DEFAULT_TIMEOUT
+  )
 }
 
 /**
@@ -101,6 +191,7 @@ export async function fetchPapersByDateRange(options = {}) {
       max_results: 500, // 足够大的数量确保覆盖当天所有论文
       auto_summary: autoSummary,
     }),
+    timeout: 120000, // 抓取论文可能需要较长时间，设置为 2 分钟
   })
 }
 
@@ -111,6 +202,7 @@ export async function fetchPapersByDateRange(options = {}) {
 export async function generateSummaries(limit = 10) {
   return request(`/papers/generate-summaries?limit=${limit}`, {
     method: 'POST',
+    timeout: 180000, // 批量生成摘要可能需要较长时间，设置为 3 分钟
   })
 }
 
@@ -181,4 +273,19 @@ export async function listTasks(status = null, limit = 20) {
  */
 export async function fetchCategories() {
   return request('/categories')
+}
+
+/**
+ * 获取机构分布统计
+ * @param {number} limit - 返回数量
+ */
+export async function fetchInstitutions(limit = 50) {
+  return request(`/institutions?limit=${limit}`)
+}
+
+/**
+ * 获取 Tier 分布统计
+ */
+export async function fetchTierStats() {
+  return request('/tier-stats')
 }

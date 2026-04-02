@@ -52,6 +52,7 @@ async def get_papers(
     categories: Optional[str] = Query(None, description="分类，逗号分隔"),
     tags: Optional[str] = Query(None, description="标签，逗号分隔"),
     tier: Optional[str] = Query(None, description="Tier等级: A, B, C"),
+    institution: Optional[str] = Query(None, description="机构关键词"),
     date_from: Optional[datetime] = Query(None, description="开始日期"),
     date_to: Optional[datetime] = Query(None, description="结束日期"),
     has_analysis: Optional[bool] = Query(None, description="是否有分析"),
@@ -78,6 +79,10 @@ async def get_papers(
                 Paper.authors.like(search_pattern),  # 作者搜索（JSON数组）
             )
         )
+
+    # 机构筛选：匹配 institutions JSON 数组
+    if institution:
+        query = query.where(Paper.institutions.like(f'%"{institution}"%'))
 
     # 分类筛选：匹配 JSON 数组中的值
     if categories:
@@ -1409,6 +1414,9 @@ async def analyze_paper(
 
 # ==================== 统计信息 ====================
 
+# 缓存统计结果（5分钟有效期）
+_stats_cache = {"data": None, "timestamp": None}
+
 
 @router.get("/stats", response_model=StatsResponse)
 async def get_stats(
@@ -1417,7 +1425,15 @@ async def get_stats(
     """获取论文库统计信息。
 
     包括总数、分析数、分类分布、标签分布等。
+    结果缓存5分钟以提升性能。
     """
+    import time
+
+    # 检查缓存
+    if _stats_cache["data"] and _stats_cache["timestamp"]:
+        if time.time() - _stats_cache["timestamp"] < 300:  # 5分钟缓存
+            return _stats_cache["data"]
+
     # 论文总数
     total_query = select(func.count()).select_from(Paper)
     total_result = await db.execute(total_query)
@@ -1438,7 +1454,7 @@ async def get_stats(
     recent_result = await db.execute(recent_query)
     recent_papers_count = recent_result.scalar() or 0
 
-    # 分类分布（需要遍历所有论文统计）
+    # 分类分布（限制返回前20个）
     all_papers_query = select(Paper.categories)
     all_papers_result = await db.execute(all_papers_query)
     all_categories = all_papers_result.scalars().all()
@@ -1449,7 +1465,12 @@ async def get_stats(
             for cat in cats:
                 categories_stats[cat] = categories_stats.get(cat, 0) + 1
 
-    # 标签分布
+    # 只返回前20个分类
+    categories_stats = dict(
+        sorted(categories_stats.items(), key=lambda x: x[1], reverse=True)[:20]
+    )
+
+    # 标签分布（限制返回前30个）
     all_tags_query = select(Paper.tags)
     all_tags_result = await db.execute(all_tags_query)
     all_tags = all_tags_result.scalars().all()
@@ -1460,13 +1481,24 @@ async def get_stats(
             for tag in tags:
                 tags_stats[tag] = tags_stats.get(tag, 0) + 1
 
-    return StatsResponse(
+    # 只返回前30个标签
+    tags_stats = dict(
+        sorted(tags_stats.items(), key=lambda x: x[1], reverse=True)[:30]
+    )
+
+    result = StatsResponse(
         total_papers=total_papers,
         analyzed_papers=analyzed_papers,
         categories=categories_stats,
         tags=tags_stats,
         recent_papers_count=recent_papers_count,
     )
+
+    # 缓存结果
+    _stats_cache["data"] = result
+    _stats_cache["timestamp"] = time.time()
+
+    return result
 
 
 # ==================== 标签与分类 ====================
@@ -1505,6 +1537,73 @@ async def get_categories() -> dict:
     }
 
     return {"categories": categories_info}
+
+
+@router.get("/institutions")
+async def get_institutions(
+    limit: int = Query(50, ge=1, le=200, description="返回数量"),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """获取机构分布统计。
+
+    返回论文数量最多的机构列表。
+    """
+    # 获取所有论文的机构信息
+    all_institutions_query = select(Paper.institutions)
+    all_institutions_result = await db.execute(all_institutions_query)
+    all_institutions = all_institutions_result.scalars().all()
+
+    # 统计机构分布
+    institutions_stats: dict = {}
+    for insts in all_institutions:
+        if insts:
+            for inst in insts:
+                if inst:
+                    institutions_stats[inst] = institutions_stats.get(inst, 0) + 1
+
+    # 按论文数量排序
+    sorted_institutions = sorted(
+        institutions_stats.items(),
+        key=lambda x: x[1],
+        reverse=True
+    )[:limit]
+
+    return {
+        "institutions": [
+            {"name": name, "count": count}
+            for name, count in sorted_institutions
+        ],
+        "total_unique": len(institutions_stats),
+    }
+
+
+@router.get("/tier-stats")
+async def get_tier_stats(
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """获取 Tier 分布统计。
+
+    返回各 Tier 的论文数量和占比。
+    """
+    # 总数
+    total_query = select(func.count()).select_from(Paper)
+    total_result = await db.execute(total_query)
+    total = total_result.scalar() or 1  # 避免除零
+
+    # Tier 分布
+    tier_query = select(Paper.tier, func.count()).group_by(Paper.tier)
+    tier_result = await db.execute(tier_query)
+    tier_stats = dict(tier_result.fetchall())
+
+    return {
+        "total": total,
+        "tiers": {
+            "A": {"count": tier_stats.get("A", 0), "percentage": round(tier_stats.get("A", 0) / total * 100, 1)},
+            "B": {"count": tier_stats.get("B", 0), "percentage": round(tier_stats.get("B", 0) / total * 100, 1)},
+            "C": {"count": tier_stats.get("C", 0), "percentage": round(tier_stats.get("C", 0) / total * 100, 1)},
+            "unrated": {"count": tier_stats.get(None, 0), "percentage": round(tier_stats.get(None, 0) / total * 100, 1)},
+        }
+    }
 
 
 # ==================== Markdown 导出 ====================

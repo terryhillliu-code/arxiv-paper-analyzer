@@ -79,6 +79,11 @@ class Paper(DeclarativeBase):
         Boolean, default=False, nullable=False
     )
 
+    # 分析模式：quick（摘要分析）或 full（全文分析）
+    analysis_mode: Mapped[Optional[str]] = mapped_column(
+        String(10), nullable=True
+    )
+
     # 行动建议（Obsidian 格式）
     action_items: Mapped[Optional[List[str]]] = mapped_column(
         JSON, nullable=True

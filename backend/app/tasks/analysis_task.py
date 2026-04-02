@@ -12,9 +12,46 @@ from app.models import Paper
 from app.services.ai_service import ai_service
 from app.services.pdf_service import pdf_service, PDFService
 from app.services.write_service import db_write_service, WriteTask
+from app.services.guardrails import analysis_guardrail
 from app.tasks.task_queue import TaskQueue, TaskStatus
 from app.outputs.markdown_generator import MarkdownGenerator
 from sqlalchemy import select
+import json as json_module
+
+
+def validate_analysis_result(analysis_json: dict, report: str) -> tuple[bool, list]:
+    """验证分析结果是否完整
+
+    Returns:
+        (is_valid, missing_fields)
+    """
+    if not analysis_json:
+        return False, ["analysis_json为空"]
+
+    if not report or len(report) < 500:
+        return False, [f"报告太短({len(report) if report else 0}字符)"]
+
+    missing = []
+
+    # 检查JSON长度
+    json_str = json_module.dumps(analysis_json, ensure_ascii=False)
+    if len(json_str) < 500:
+        missing.append(f"JSON太短({len(json_str)}字符)")
+
+    # 检查关键字段
+    required_fields = {
+        "tier": lambda x: x in ["A", "B", "C"],
+        "one_line_summary": lambda x: x and len(x) > 10,
+        "outline": lambda x: x and len(x) > 0,
+        "key_contributions": lambda x: x and len(x) > 0,
+    }
+
+    for field, validator in required_fields.items():
+        value = analysis_json.get(field)
+        if not value or not validator(value):
+            missing.append(field)
+
+    return len(missing) == 0, missing
 
 logger = logging.getLogger(__name__)
 
@@ -142,9 +179,57 @@ class AnalysisTaskHandler:
 
         logger.info(f"分析结果生成完成，准备保存")
 
+        # ========== 防护层：Tier A 二次确认 ==========
+        if analysis_json.get("tier") == "A":
+            logger.warning(f"⚠️ Tier A 论文检测: {paper_arxiv_id}")
+            # 记录 Tier A 论文信息，供人工复查
+            logger.warning(
+                f"Tier A 详细信息:\n"
+                f"  - 标题: {paper_title[:50]}...\n"
+                f"  - 贡献数: {len(analysis_json.get('key_contributions', []))}\n"
+                f"  - 标签: {analysis_json.get('tags', [])}\n"
+                f"  - 一句话总结: {analysis_json.get('one_line_summary', '')[:80]}..."
+            )
+            # 可以在这里添加自动告警机制
+            # 例如：发送飞书通知、记录到告警日志等
+
+        # ========== 防护层：最终验证 ==========
+        if analysis_json:
+            # 确保 tier 存在且合理
+            tier = analysis_json.get("tier", "B")
+            if tier not in ["A", "B", "C"]:
+                logger.warning(f"无效 tier '{tier}'，降级为 B")
+                analysis_json["tier"] = "B"
+
+            # 确保必要字段存在
+            required_fields = ["tier", "tags", "one_line_summary"]
+            for field in required_fields:
+                if field not in analysis_json or not analysis_json.get(field):
+                    logger.warning(f"缺少必要字段 '{field}'，将使用默认值")
+                    if field == "tier":
+                        analysis_json[field] = "B"
+                    elif field == "tags":
+                        analysis_json[field] = []
+                    elif field == "one_line_summary":
+                        analysis_json[field] = paper_abstract[:100] if paper_abstract else ""
+
         # ========== 阶段4: 导出到 Obsidian ==========
         export_result = None
         md_output_path = None
+
+        # ========== 验证分析结果完整性 ==========
+        is_valid, missing_fields = validate_analysis_result(analysis_json, analysis_report)
+        if not is_valid:
+            logger.error(f"❌ 分析结果验证失败: {missing_fields}")
+            # 验证失败，不写入结果，返回失败状态
+            return {
+                "paper_id": paper_id,
+                "status": "failed",
+                "reason": f"验证失败: {missing_fields}",
+                "has_analysis": False,
+            }
+
+        logger.info(f"✅ 分析结果验证通过")
 
         try:
             generator = MarkdownGenerator()
@@ -174,11 +259,13 @@ class AnalysisTaskHandler:
             analysis_report=analysis_report,
             analysis_json=analysis_json,
             tier=analysis_json.get("tier") if analysis_json else None,
+            summary=analysis_json.get("one_line_summary") if analysis_json else None,
             action_items=analysis_json.get("action_items") if analysis_json else None,
             knowledge_links=analysis_json.get("knowledge_links") if analysis_json else None,
             tags=analysis_json.get("tags") if analysis_json else None,
             md_output_path=md_output_path,
             has_analysis=True,
+            analysis_mode="quick" if quick_mode else "full",  # 记录分析模式
         )
 
         success = await db_write_service.submit(write_task)

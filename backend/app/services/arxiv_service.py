@@ -124,6 +124,11 @@ class ArxivService:
                 # 提取分类列表
                 categories = [cat for cat in result.categories]
 
+                # 计算初始 Tier（使用固化规则）
+                from app.services.paper_scorer import PaperScorer
+                score = PaperScorer.score(result.title, result.summary or "", authors)
+                initial_tier = PaperScorer.get_initial_tier(score)
+
                 # 创建 Paper 对象
                 paper = Paper(
                     arxiv_id=arxiv_id,
@@ -134,6 +139,7 @@ class ArxivService:
                     publish_date=result.published,
                     pdf_url=result.pdf_url,
                     arxiv_url=result.entry_id,
+                    tier=initial_tier,  # 入库时分配初始 Tier
                 )
 
                 db.add(paper)
@@ -273,6 +279,16 @@ class ArxivService:
                 authors = [author.name for author in result.authors]
                 categories_list = [cat for cat in result.categories]
 
+                # 计算初始 Tier
+                from app.services.paper_scorer import PaperScorer
+                score = PaperScorer.score(result.title, result.summary or "", authors)
+                if score >= 60:
+                    initial_tier = "A"
+                elif score >= 40:
+                    initial_tier = "B"
+                else:
+                    initial_tier = "C"
+
                 paper = Paper(
                     arxiv_id=arxiv_id,
                     title=result.title.strip(),
@@ -282,6 +298,7 @@ class ArxivService:
                     publish_date=result.published,
                     pdf_url=result.pdf_url,
                     arxiv_url=result.entry_id,
+                    tier=initial_tier,
                 )
 
                 db.add(paper)
@@ -475,6 +492,15 @@ class ArxivService:
                 # 创建 Paper 对象
                 categories_list = [cat for cat in result.categories]
 
+                # 计算初始 Tier
+                score = PaperScorer.score(title, abstract, authors)
+                if score >= 60:
+                    initial_tier = "A"
+                elif score >= 40:
+                    initial_tier = "B"
+                else:
+                    initial_tier = "C"
+
                 paper = Paper(
                     arxiv_id=arxiv_id,
                     title=result.title.strip(),
@@ -484,6 +510,7 @@ class ArxivService:
                     publish_date=result.published,
                     pdf_url=result.pdf_url,
                     arxiv_url=result.entry_id,
+                    tier=initial_tier,
                 )
 
                 db.add(paper)

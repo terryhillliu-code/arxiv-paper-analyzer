@@ -27,6 +27,7 @@ class WriteTask:
     md_output_path: Optional[str] = None
     has_analysis: bool = True
     full_analysis: Optional[bool] = None
+    analysis_mode: Optional[str] = None  # "quick" 或 "full"
     future: asyncio.Future = field(default=None, repr=False)
 
 
@@ -157,6 +158,8 @@ class DatabaseWriteService:
                     paper.md_output_path = task.md_output_path
                 if task.full_analysis is not None:
                     paper.full_analysis = task.full_analysis
+                if task.analysis_mode:
+                    paper.analysis_mode = task.analysis_mode
 
                 # 提交
                 logger.debug(f"准备提交: paper_id={task.paper_id}")

@@ -5,8 +5,31 @@
 """
 
 import httpx
+import pytest
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from sqlalchemy import select
+from app.database import async_session_maker
+from app.models import Paper
 
 BASE_URL = "http://localhost:8000"
+
+
+@pytest.fixture(scope="module")
+def paper_id():
+    """获取一个有效的 paper_id 用于测试"""
+    import asyncio
+
+    async def get_first_paper_id():
+        async with async_session_maker() as db:
+            result = await db.execute(select(Paper.id).limit(1))
+            paper = result.scalar_one_or_none()
+            return paper or 1
+
+    return asyncio.run(get_first_paper_id())
 
 
 def test_health():

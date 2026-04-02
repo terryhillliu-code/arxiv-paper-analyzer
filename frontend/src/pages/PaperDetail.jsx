@@ -5,6 +5,7 @@ import { zhCN } from 'date-fns/locale'
 import MindMap from 'simple-mind-map'
 import 'simple-mind-map/dist/simpleMindMap.esm.css'
 import AnalysisReport from '../components/AnalysisReport'
+import { PaperDetailSkeleton } from '../components/Skeleton'
 import { fetchPaperDetail, createAnalysisTask, getTaskStatus } from '../api/papers'
 
 // 学科分类颜色映射 - 扩展版
@@ -103,6 +104,7 @@ export default function PaperDetail() {
   // 分析进度定时器
   const progressTimerRef = useRef(null)
   const progressPhaseRef = useRef(0)
+  const abortControllerRef = useRef(null) // 用于取消请求
 
   // 加载论文详情
   const loadPaper = useCallback(async () => {
@@ -128,6 +130,9 @@ export default function PaperDetail() {
     setAnalysisMessage(null)
     setAnalysisProgress('正在创建分析任务...')
 
+    // 创建新的 AbortController
+    abortControllerRef.current = new AbortController()
+
     try {
       // 创建异步任务
       const task = await createAnalysisTask(id, true, forceRefresh)
@@ -135,12 +140,41 @@ export default function PaperDetail() {
 
       setAnalysisProgress(task.message || '任务已创建，正在处理...')
 
-      // 轮询任务状态
+      // 轮询配置
       const pollInterval = 2000 // 2秒轮询一次
+      const maxPolls = 300 // 最多轮询 300 次 (10分钟)
+      const timeoutMs = 10 * 60 * 1000 // 10分钟总超时
+      const startTime = Date.now()
+      let pollCount = 0
       let completed = false
 
       while (!completed) {
+        // 检查是否被取消
+        if (abortControllerRef.current?.signal.aborted) {
+          setAnalysisMessage({ type: 'error', text: '分析已取消' })
+          break
+        }
+
+        // 检查超时
+        if (Date.now() - startTime > timeoutMs) {
+          setAnalysisMessage({ type: 'error', text: '分析超时（超过10分钟），请稍后刷新页面查看结果' })
+          break
+        }
+
+        // 检查最大轮询次数
+        pollCount++
+        if (pollCount > maxPolls) {
+          setAnalysisMessage({ type: 'error', text: '分析时间过长，请稍后刷新页面查看结果' })
+          break
+        }
+
         await new Promise(resolve => setTimeout(resolve, pollInterval))
+
+        // 再次检查是否被取消
+        if (abortControllerRef.current?.signal.aborted) {
+          setAnalysisMessage({ type: 'error', text: '分析已取消' })
+          break
+        }
 
         const status = await getTaskStatus(taskId)
 
@@ -165,18 +199,28 @@ export default function PaperDetail() {
         }
       }
     } catch (err) {
-      setAnalysisMessage({ type: 'error', text: `分析失败: ${err.message}` })
+      // 检查是否是取消导致的错误
+      if (err.name === 'AbortError') {
+        setAnalysisMessage({ type: 'error', text: '分析已取消' })
+      } else {
+        setAnalysisMessage({ type: 'error', text: `分析失败: ${err.message}` })
+      }
     } finally {
       setAnalyzing(false)
       setAnalysisProgress('')
+      abortControllerRef.current = null
     }
   }
 
-  // 组件卸载时清理定时器
+  // 组件卸载时清理定时器和取消请求
   useEffect(() => {
     return () => {
       if (progressTimerRef.current) {
         clearTimeout(progressTimerRef.current)
+      }
+      // 取消正在进行的分析请求
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort()
       }
     }
   }, [])
@@ -187,15 +231,17 @@ export default function PaperDetail() {
     return format(new Date(dateStr), 'yyyy年M月d日', { locale: zhCN })
   }
 
-  // 导出思维导图
-  const downloadOutline = (format) => {
-    if (!analysis_json?.outline) return
+  // 导出思维导图（接收 paper 对象作为参数，因为函数定义位置早于解构）
+  const downloadOutline = (format, paperData) => {
+    const outline = paperData?.analysis_json?.outline
+    const paperTitle = paperData?.title
+    if (!outline) return
 
     let content = ''
-    const filename = `思维导图_${title?.slice(0, 30) || 'paper'}`
+    const filename = `思维导图_${paperTitle?.slice(0, 30) || 'paper'}`
 
     if (format === 'json') {
-      content = JSON.stringify(analysis_json.outline, null, 2)
+      content = JSON.stringify(outline, null, 2)
       const blob = new Blob([content], { type: 'application/json' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -216,7 +262,7 @@ export default function PaperDetail() {
         }
         return md
       }
-      content = `# ${title || '论文思维导图'}\n\n${generateMarkdown(analysis_json.outline)}`
+      content = `# ${paperTitle || '论文思维导图'}\n\n${generateMarkdown(outline)}`
       const blob = new Blob([content], { type: 'text/markdown' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -235,14 +281,7 @@ export default function PaperDetail() {
 
   // 加载中
   if (loading) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex justify-center items-center">
-        <div className="text-center">
-          <div className="w-12 h-12 border-4 border-gray-200 border-t-purple-700 rounded-full animate-spin mx-auto mb-4" />
-          <p className="text-gray-500">加载中...</p>
-        </div>
-      </div>
-    )
+    return <PaperDetailSkeleton />
   }
 
   // 错误
@@ -405,13 +444,13 @@ export default function PaperDetail() {
             {analysis_json?.outline && (
               <div className="flex gap-2">
                 <button
-                  onClick={() => downloadOutline('markdown')}
+                  onClick={() => downloadOutline('markdown', paper)}
                   className="text-sm px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
                 >
                   导出 Markdown
                 </button>
                 <button
-                  onClick={() => downloadOutline('json')}
+                  onClick={() => downloadOutline('json', paper)}
                   className="text-sm px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
                 >
                   导出 JSON

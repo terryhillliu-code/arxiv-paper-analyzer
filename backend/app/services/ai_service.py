@@ -10,22 +10,31 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from openai import OpenAI
+from openai import OpenAI, APIError, APIConnectionError, RateLimitError
 import anthropic
 
 from app.config import get_settings
 from app.prompts.templates import (
     ANALYSIS_JSON_PROMPT,
+    QUICK_MODE_JSON_PROMPT,
     DEEP_ANALYSIS_PROMPT,
+    QUICK_MODE_ANALYSIS_PROMPT,
     PREDEFINED_TAGS,
     SUMMARY_PROMPT,
     TIER_REEVALUATION_PROMPT,
 )
+from app.services.guardrails import analysis_guardrail, CheckResult
 
 logger = logging.getLogger(__name__)
+
+# 重试配置
+MAX_RETRIES = 3
+RETRY_DELAY = 5.0  # 秒
+RETRY_BACKOFF = 2.0  # 指数退避因子
 
 
 class AIService:
@@ -46,6 +55,9 @@ class AIService:
         self.model = settings.ai_model
         self.max_tokens = settings.ai_max_tokens
 
+        # API 超时设置（秒）
+        self.timeout = 120  # 默认 2 分钟超时
+
         # 根据模型选择客户端
         if self.model in self.CODING_PLAN_MODELS:
             # 使用 Coding Plan API (OpenAI 兼容格式)
@@ -53,6 +65,7 @@ class AIService:
             self.client = OpenAI(
                 api_key=settings.coding_plan_api_key,
                 base_url="https://coding.dashscope.aliyuncs.com/v1",
+                timeout=self.timeout,
             )
             logger.info(f"使用 Coding Plan API，模型: {self.model}")
         elif self.model in self.DASHSCOPE_MODELS:
@@ -61,16 +74,20 @@ class AIService:
             self.client = OpenAI(
                 api_key=settings.dashscope_api_key,
                 base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+                timeout=self.timeout,
             )
             logger.info(f"使用百炼 API，模型: {self.model}")
         else:
             # 使用 Anthropic API
             self.client_type = "anthropic"
-            self.client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+            self.client = anthropic.Anthropic(
+                api_key=settings.anthropic_api_key,
+                timeout=self.timeout,
+            )
             logger.info(f"使用 Anthropic API，模型: {self.model}")
 
     def _call_api(self, prompt: str, max_tokens: Optional[int] = None) -> str:
-        """统一调用 AI API。
+        """统一调用 AI API，带重试机制。
 
         Args:
             prompt: 输入提示词
@@ -78,32 +95,63 @@ class AIService:
 
         Returns:
             模型响应文本
+
+        Raises:
+            最后一次重试失败后抛出异常
         """
         max_tokens = max_tokens or self.max_tokens
+        last_error = None
 
-        if self.client_type in ["coding_plan", "dashscope"]:
-            # Coding Plan API 和百炼 API 都使用 OpenAI 兼容格式
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=max_tokens,
-            )
-            return response.choices[0].message.content or ""
-        else:
-            # Anthropic API
-            message = self.client.messages.create(
-                model=self.model,
-                max_tokens=max_tokens,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            # 处理不同的 content block 类型
-            response_text = ""
-            for block in message.content:
-                if hasattr(block, "text"):
-                    response_text += block.text
-                elif hasattr(block, "content"):
-                    response_text += str(block.content)
-            return response_text
+        for attempt in range(MAX_RETRIES):
+            try:
+                if self.client_type in ["coding_plan", "dashscope"]:
+                    # Coding Plan API 和百炼 API 都使用 OpenAI 兼容格式
+                    response = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=[{"role": "user", "content": prompt}],
+                        max_tokens=max_tokens,
+                    )
+                    return response.choices[0].message.content or ""
+                else:
+                    # Anthropic API
+                    message = self.client.messages.create(
+                        model=self.model,
+                        max_tokens=max_tokens,
+                        messages=[{"role": "user", "content": prompt}],
+                    )
+                    # 处理不同的 content block 类型
+                    response_text = ""
+                    for block in message.content:
+                        if hasattr(block, "text"):
+                            response_text += block.text
+                        elif hasattr(block, "content"):
+                            response_text += str(block.content)
+                    return response_text
+
+            except (APIConnectionError, APIError) as e:
+                last_error = e
+                delay = RETRY_DELAY * (RETRY_BACKOFF ** attempt)
+                logger.warning(f"API 调用失败 (尝试 {attempt + 1}/{MAX_RETRIES}): {e}")
+                if attempt < MAX_RETRIES - 1:
+                    logger.info(f"等待 {delay:.1f} 秒后重试...")
+                    time.sleep(delay)
+
+            except RateLimitError as e:
+                last_error = e
+                delay = RETRY_DELAY * 4  # 限流时等待更长时间
+                logger.warning(f"API 限流: {e}")
+                if attempt < MAX_RETRIES - 1:
+                    logger.info(f"等待 {delay:.1f} 秒后重试...")
+                    time.sleep(delay)
+
+            except Exception as e:
+                last_error = e
+                logger.error(f"API 调用未知错误: {e}")
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(RETRY_DELAY)
+
+        # 所有重试都失败
+        raise RuntimeError(f"API 调用失败，已重试 {MAX_RETRIES} 次: {last_error}")
 
     async def generate_summary(
         self,
@@ -194,6 +242,19 @@ class AIService:
             包含 report 和 analysis_json 的字典
         """
         try:
+            # ========== 防护层：分析前检查 ==========
+            pre_check = analysis_guardrail.pre_analysis_check(
+                quick_mode=quick_mode,
+                content=content,
+                abstract="",  # 摘要已在调用前处理
+                title=title,
+            )
+            if not pre_check.valid:
+                logger.warning(f"分析前检查警告: {pre_check.warnings}")
+                # 如果有警告但不是致命错误，继续执行
+                for warning in pre_check.warnings:
+                    logger.warning(warning)
+
             # 判断是否是新论文（三个月内）
             from datetime import datetime, timedelta
             is_new_paper = False
@@ -211,17 +272,28 @@ class AIService:
                 content = content[:max_content_length]
                 logger.warning(f"内容已截断至 {max_content_length} 字符")
 
-            # 格式化提示词
-            prompt = DEEP_ANALYSIS_PROMPT.format(
-                title=title,
-                authors=", ".join(authors) if authors else "未知",
-                institutions=", ".join(institutions) if institutions else "未知",
-                publish_date=publish_date or "未知",
-                categories=", ".join(categories) if categories else "未分类",
-                arxiv_url=arxiv_url or "",
-                pdf_url=pdf_url or "",
-                content=content,
-            )
+            # 格式化提示词（快速模式使用专门的 prompt）
+            if quick_mode:
+                prompt = QUICK_MODE_ANALYSIS_PROMPT.format(
+                    title=title,
+                    authors=", ".join(authors) if authors else "未知",
+                    institutions=", ".join(institutions) if institutions else "未知",
+                    publish_date=publish_date or "未知",
+                    categories=", ".join(categories) if categories else "未分类",
+                    arxiv_url=arxiv_url or "",
+                    content=content,
+                )
+            else:
+                prompt = DEEP_ANALYSIS_PROMPT.format(
+                    title=title,
+                    authors=", ".join(authors) if authors else "未知",
+                    institutions=", ".join(institutions) if institutions else "未知",
+                    publish_date=publish_date or "未知",
+                    categories=", ".join(categories) if categories else "未分类",
+                    arxiv_url=arxiv_url or "",
+                    pdf_url=pdf_url or "",
+                    content=content,
+                )
 
             # 调用 AI API (在线程池中运行，避免阻塞事件循环)
             logger.info(f"开始生成深度分析: {title[:30]}...")
@@ -241,8 +313,9 @@ class AIService:
                     quick_client = OpenAIClient(
                         api_key=settings.coding_plan_api_key,
                         base_url="https://coding.dashscope.aliyuncs.com/v1",
+                        timeout=180,  # 3 分钟超时
                     )
-                    prompt_json = ANALYSIS_JSON_PROMPT.format(
+                    prompt_json = QUICK_MODE_JSON_PROMPT.format(
                         report=report,
                         citation_count=citation_count if citation_count else "未知（新论文）",
                         institutions=", ".join(institutions) if institutions else "未知",
@@ -283,6 +356,30 @@ class AIService:
                     for key, default in DEFAULT_VALUES.items():
                         if key not in analysis_json:
                             analysis_json[key] = default
+
+                    # ========== 防护层：分析后验证 ==========
+                    post_check = analysis_guardrail.post_analysis_validate(
+                        analysis_json=analysis_json,
+                        quick_mode=quick_mode,
+                        content_used=content,
+                    )
+                    if not post_check.valid:
+                        logger.warning(f"分析后验证警告: {post_check.warnings}")
+                        for warning in post_check.warnings:
+                            logger.warning(warning)
+
+                    # ========== 防护层：捏造检测 ==========
+                    fabric_check = analysis_guardrail.detect_fabrication(
+                        analysis_json=analysis_json,
+                        quick_mode=quick_mode,
+                    )
+                    if not fabric_check.valid:
+                        logger.error(f"⚠️ 检测到疑似捏造: {fabric_check.warnings}")
+                        # 如果检测到捏造，降级处理
+                        if fabric_check.warnings:
+                            logger.warning("降级处理：简化 outline，移除公式符号")
+                            analysis_json["outline"] = []  # 清空可疑 outline
+
                     logger.info(f"快速模式: JSON提取完成 tier={analysis_json.get('tier', 'B')}")
                 except Exception as e:
                     logger.warning(f"JSON提取失败: {e}")
@@ -459,6 +556,17 @@ class AIService:
                     result["related_work"]["key_references"] = []
                 if "similar_papers" not in result["related_work"]:
                     result["related_work"]["similar_papers"] = []
+
+            # ========== 防护层：分析后验证（完整模式） ==========
+            post_check = analysis_guardrail.post_analysis_validate(
+                analysis_json=result,
+                quick_mode=False,  # 完整模式
+                content_used=report,
+            )
+            if not post_check.valid:
+                logger.warning(f"完整模式分析后验证警告: {post_check.warnings}")
+                for warning in post_check.warnings:
+                    logger.warning(warning)
 
             logger.info(f"结构化数据提取成功: outline={len(result.get('outline', []))} 章节, "
                        f"contributions={len(result.get('key_contributions', []))} 条")

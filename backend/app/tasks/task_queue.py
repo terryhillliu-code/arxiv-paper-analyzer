@@ -66,6 +66,14 @@ class Task:
 class TaskQueue:
     """任务队列管理器"""
 
+    # 任务超时配置
+    DEFAULT_TASK_TIMEOUT = 600  # 默认 10 分钟超时
+    TASK_TIMEOUTS = {
+        "analysis": 600,  # 分析任务 10 分钟
+        "summary": 300,   # 摘要任务 5 分钟
+        "fetch": 300,     # 抓取任务 5 分钟
+    }
+
     def __init__(self, db_path: Path = TASK_DB_PATH, max_concurrent: int = 6):
         self.db_path = db_path
         self._ensure_db()
@@ -293,65 +301,190 @@ class TaskQueue:
                 )
                 return
 
-        try:
-            # 标记为运行中
-            self.update_task(task.id, status=TaskStatus.RUNNING, message="开始处理...")
+        # 获取任务超时时间
+        timeout = self.TASK_TIMEOUTS.get(task.task_type, self.DEFAULT_TASK_TIMEOUT)
 
-            # 执行处理器
-            result = await handler(task, self)
+        # 任务重试配置
+        max_retries = 2
+        retry_delay = 30.0  # 秒
 
-            # 标记完成
-            self.update_task(
-                task.id,
-                status=TaskStatus.COMPLETED,
-                progress=100,
-                result=result,
-                message="处理完成",
-            )
+        for attempt in range(max_retries + 1):
+            try:
+                # 更新处理进度
+                if attempt > 0:
+                    self.update_task(task.id, message=f"重试处理 (尝试 {attempt + 1}/{max_retries + 1})...")
 
-            # 任务完成后短暂休息（激进策略）
-            status = resource_monitor.check_resources()
-            if status.memory_percent > 90 or status.cpu_percent > 90:
-                await asyncio.sleep(1.0)  # 资源极紧张
-            # else: 不休息
+                # 执行处理器（带超时）
+                try:
+                    result = await asyncio.wait_for(
+                        handler(task, self),
+                        timeout=timeout
+                    )
+                except asyncio.TimeoutError:
+                    raise TimeoutError(f"任务执行超时（超过 {timeout} 秒）")
 
-        except Exception as e:
-            logger.error(f"任务 {task.id} 失败: {e}", exc_info=True)
-            self.update_task(
-                task.id,
-                status=TaskStatus.FAILED,
-                error=str(e),
-            )
+                # 标记完成
+                self.update_task(
+                    task.id,
+                    status=TaskStatus.COMPLETED,
+                    progress=100,
+                    result=result,
+                    message="处理完成",
+                )
+
+                # 任务完成后短暂休息
+                status = resource_monitor.check_resources()
+                if status.memory_percent > 90 or status.cpu_percent > 90:
+                    await asyncio.sleep(1.0)
+
+                return  # 成功，退出重试循环
+
+            except TimeoutError as e:
+                logger.error(f"任务 {task.id} 超时: {e}")
+                if attempt < max_retries:
+                    logger.info(f"任务 {task.id} 将在 {retry_delay} 秒后重试...")
+                    await asyncio.sleep(retry_delay)
+                else:
+                    self.update_task(
+                        task.id,
+                        status=TaskStatus.FAILED,
+                        error=f"任务超时，已重试 {max_retries} 次: {e}",
+                    )
+
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"任务 {task.id} 失败: {e}", exc_info=True)
+
+                # 检查是否为网络相关错误
+                is_network_error = any(keyword in error_msg.lower() for keyword in [
+                    'connection', 'network', 'timeout', 'refused', 'reset',
+                    'broken pipe', 'api', 'http'
+                ])
+
+                if is_network_error and attempt < max_retries:
+                    logger.info(f"网络错误，任务 {task.id} 将在 {retry_delay} 秒后重试...")
+                    await asyncio.sleep(retry_delay)
+                else:
+                    self.update_task(
+                        task.id,
+                        status=TaskStatus.FAILED,
+                        error=f"任务失败: {error_msg}",
+                    )
+                    return
 
     async def run_worker(self, poll_interval: float = 2.0):
         """运行工作循环"""
         self._running = True
+
+        # 启动时恢复 stuck 任务
+        self._recover_stuck_tasks()
+
         logger.info("任务队列工作器启动")
+
+        # 活跃任务集合
+        active_tasks = set()
 
         while self._running:
             try:
-                # 获取待处理任务
-                tasks = self.get_pending_tasks(limit=1)
+                # 清理已完成的任务
+                done_tasks = [t for t in active_tasks if t.done()]
+                for t in done_tasks:
+                    active_tasks.discard(t)
+                    try:
+                        await t
+                    except Exception as e:
+                        logger.debug(f"任务异常: {e}")
 
-                if tasks:
-                    # 处理一个任务
-                    await self.process_task(tasks[0])
-                else:
-                    # 无任务时等待
+                # 如果有可用槽位，启动新任务
+                available_slots = self._semaphore._value if hasattr(self._semaphore, '_value') else 3
+                while len(active_tasks) < available_slots:
+                    tasks = self.get_pending_tasks(limit=1)
+                    if not tasks:
+                        break
+
+                    # 立即更新状态为 running，防止重复处理
+                    task = tasks[0]
+                    self.update_task(task.id, status=TaskStatus.RUNNING, message="开始处理...")
+
+                    # 创建任务并添加到活跃集合
+                    task_coro = self._process_task_internal(task)
+                    active_tasks.add(asyncio.create_task(task_coro))
+
+                # 如果没有活跃任务且没有待处理任务，等待
+                if not active_tasks:
                     await asyncio.sleep(poll_interval)
+                else:
+                    # 短暂等待，避免忙等待
+                    await asyncio.sleep(0.5)
 
                 # 定期检查资源状态
                 status = resource_monitor.check_resources()
-                if status.warning:
-                    logger.warning(f"资源警告: {status.warning}")
-                    # 如果资源紧张，增加休息时间
-                    if not status.is_safe:
-                        logger.info("资源紧张，等待恢复...")
-                        await asyncio.sleep(10.0)
+                if status.warning and not status.is_safe:
+                    logger.info(f"资源紧张: {status.warning}")
+                    await asyncio.sleep(5.0)
 
             except Exception as e:
                 logger.error(f"工作循环错误: {e}", exc_info=True)
                 await asyncio.sleep(poll_interval)
+
+    async def _process_task_internal(self, task: Task):
+        """内部任务处理方法"""
+        async with self._semaphore:
+            self._active_tasks.add(task.id)
+            try:
+                handler = self._handlers.get(task.task_type)
+                if not handler:
+                    self.update_task(
+                        task.id,
+                        status=TaskStatus.FAILED,
+                        error=f"未知的任务类型: {task.task_type}",
+                    )
+                    return
+
+                await self._execute_task(task, handler)
+            finally:
+                self._active_tasks.discard(task.id)
+
+    def _recover_stuck_tasks(self):
+        """恢复卡住的任务。
+
+        将超时的 running 任务重置为 pending，使其可以重新处理。
+        """
+        from datetime import datetime, timedelta
+
+        # 超过 30 分钟的任务视为卡住
+        stuck_threshold = (datetime.now() - timedelta(minutes=30)).isoformat()
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # 查找卡住的任务
+        cursor.execute('''
+            SELECT id, task_type, started_at FROM tasks
+            WHERE status = 'running' AND started_at < ?
+        ''', (stuck_threshold,))
+
+        stuck_tasks = cursor.fetchall()
+
+        if stuck_tasks:
+            logger.warning(f"发现 {len(stuck_tasks)} 个卡住的任务，正在恢复...")
+
+            # 重置为 pending
+            cursor.execute('''
+                UPDATE tasks SET
+                    status = 'pending',
+                    progress = 0,
+                    started_at = NULL,
+                    message = '系统恢复：重新处理'
+                WHERE status = 'running' AND started_at < ?
+            ''', (stuck_threshold,))
+
+            conn.commit()
+
+            for task_id, task_type, started_at in stuck_tasks:
+                logger.info(f"已恢复任务: {task_id} ({task_type})")
+
+        conn.close()
 
     def stop(self):
         """停止工作循环"""
