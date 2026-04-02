@@ -119,6 +119,10 @@ class Paper(DeclarativeBase):
     influential_citation_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     s2_paper_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
 
+    # === RAG 同步字段 ===
+    rag_indexed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    lancedb_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+
     def __repr__(self) -> str:
         return f"<Paper(id={self.id}, arxiv_id={self.arxiv_id}, title={self.title[:30]}...)>"
 

@@ -275,6 +275,51 @@ class AnalysisTaskHandler:
 
         logger.info(f"✅ 论文 {paper_id} 分析完成")
 
+        # ========== 阶段6: 同步到 RAG (异步，不阻塞主流程) ==========
+        rag_indexed = False
+        lancedb_id = None
+        if md_output_path and paper_arxiv_id:
+            try:
+                import subprocess
+                from pathlib import Path as PathLib
+
+                rag_venv = PathLib.home() / "zhiwei-rag" / "venv" / "bin" / "python3"
+                rag_script = PathLib.home() / "zhiwei-rag" / "scripts" / "ingest_incremental.py"
+
+                if rag_venv.exists() and rag_script.exists():
+                    result = subprocess.run(
+                        [str(rag_venv), str(rag_script),
+                         "--file", md_output_path,
+                         "--prefix", f"arxiv:{paper_arxiv_id}:",
+                         "--no-vlm"],
+                        capture_output=True,
+                        text=True,
+                        timeout=120,
+                        cwd=str(PathLib.home() / "zhiwei-rag"),
+                    )
+                    if result.returncode == 0:
+                        rag_indexed = True
+                        lancedb_id = f"arxiv:{paper_arxiv_id}"
+                        logger.info(f"✅ RAG 同步成功: {lancedb_id}")
+                    else:
+                        logger.warning(f"RAG 同步失败: {result.stderr[:100]}")
+            except Exception as e:
+                logger.warning(f"RAG 同步异常: {e}")
+
+        # 更新写入任务，包含 RAG 状态
+        if rag_indexed:
+            # 需要重新提交写入任务更新 rag_indexed 字段
+            async with async_session_maker() as db:
+                from sqlalchemy import update
+                from app.models import Paper
+                await db.execute(
+                    update(Paper).where(Paper.id == paper_id).values(
+                        rag_indexed=True,
+                        lancedb_id=lancedb_id
+                    )
+                )
+                await db.commit()
+
         return {
             "paper_id": paper_id,
             "status": "completed",
@@ -282,6 +327,7 @@ class AnalysisTaskHandler:
             "has_outline": bool(analysis_json.get("outline")),
             "has_contributions": bool(analysis_json.get("key_contributions")),
             "md_path": md_output_path,
+            "rag_indexed": rag_indexed,
         }
 
 
