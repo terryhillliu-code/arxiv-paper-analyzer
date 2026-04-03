@@ -5,6 +5,7 @@
 """
 
 import logging
+import os
 from typing import Dict, Any
 
 from app.database import async_session_maker
@@ -58,6 +59,59 @@ logger = logging.getLogger(__name__)
 
 class AnalysisTaskHandler:
     """分析任务处理器"""
+
+    @staticmethod
+    def _update_frontmatter_field(filepath: str, field: str, value: Any) -> None:
+        """更新 Obsidian Markdown 文件的 frontmatter 字段
+
+        Args:
+            filepath: Markdown 文件路径
+            field: 字段名
+            value: 字段值
+        """
+        import re
+
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # 检查是否有 frontmatter
+        if not content.startswith('---'):
+            return
+
+        # 找到 frontmatter 结束位置
+        fm_end = content.find('---', 3)
+        if fm_end == -1:
+            return
+
+        frontmatter = content[3:fm_end]
+
+        # 格式化值
+        if isinstance(value, bool):
+            value_str = str(value).lower()
+        elif isinstance(value, str):
+            value_str = f'"{value}"'
+        else:
+            value_str = str(value)
+
+        # 检查字段是否已存在
+        pattern = rf'^{field}:\s*.+$'
+        if re.search(pattern, frontmatter, re.MULTILINE):
+            # 更新现有字段
+            new_frontmatter = re.sub(
+                pattern,
+                f'{field}: {value_str}',
+                frontmatter,
+                flags=re.MULTILINE
+            )
+        else:
+            # 添加新字段
+            new_frontmatter = frontmatter.rstrip() + f'\n{field}: {value_str}'
+
+        # 重新组装文件
+        new_content = '---' + new_frontmatter + '---' + content[fm_end + 3:]
+
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(new_content)
 
     @staticmethod
     async def handle(task, queue: TaskQueue) -> Dict[str, Any]:
@@ -243,6 +297,12 @@ class AnalysisTaskHandler:
                     "arxiv_id": paper_arxiv_id,
                     "tags": analysis_json.get("tags") or paper_tags,
                     "content_type": paper_content_type,
+                    # 联动字段（v1.1 状态同步）
+                    "paper_id": paper_id,
+                    "has_analysis": True,  # 分析完成后为 True
+                    "rag_indexed": False,  # 初始为 False，RAG 同步后更新
+                    "analysis_mode": "quick" if quick_mode else "full",
+                    "pdf_local_path": paper_pdf_local_path,
                 },
                 analysis_json=analysis_json or {},
                 report=analysis_report or "",
@@ -308,10 +368,9 @@ class AnalysisTaskHandler:
 
         # 更新写入任务，包含 RAG 状态
         if rag_indexed:
-            # 需要重新提交写入任务更新 rag_indexed 字段
+            # 更新数据库
             async with async_session_maker() as db:
                 from sqlalchemy import update
-                from app.models import Paper
                 await db.execute(
                     update(Paper).where(Paper.id == paper_id).values(
                         rag_indexed=True,
@@ -319,6 +378,14 @@ class AnalysisTaskHandler:
                     )
                 )
                 await db.commit()
+
+            # 更新 Obsidian 文件的 rag_indexed 字段
+            if md_output_path and os.path.exists(md_output_path):
+                try:
+                    self._update_frontmatter_field(md_output_path, "rag_indexed", True)
+                    logger.info(f"✅ Obsidian frontmatter 已更新: rag_indexed=True")
+                except Exception as e:
+                    logger.warning(f"更新 Obsidian frontmatter 失败: {e}")
 
         return {
             "paper_id": paper_id,

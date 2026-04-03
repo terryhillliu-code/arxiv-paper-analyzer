@@ -33,7 +33,7 @@ class ResourceMonitor:
     def __init__(
         self,
         max_cpu_percent: float = 85.0,  # CPU 可以较高
-        max_memory_percent: float = 90.0,  # 内存阈值适当放宽
+        max_memory_percent: float = 96.0,  # 内存阈值临时放宽到 96%
         max_temperature: float = 85.0,  # 安全温度
         check_interval: float = 2.0,
     ):

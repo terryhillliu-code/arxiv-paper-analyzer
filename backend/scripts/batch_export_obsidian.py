@@ -78,6 +78,12 @@ async def batch_export(limit: int = 1000, tier_filter: str = None):
                     "arxiv_id": paper.arxiv_id,
                     "tags": analysis_json.get("tags") or paper.tags,
                     "content_type": paper.content_type or "paper",
+                    # ⭐ v1.1 联动字段
+                    "paper_id": paper.id,
+                    "has_analysis": paper.has_analysis,
+                    "rag_indexed": paper.rag_indexed,
+                    "analysis_mode": paper.analysis_mode or "",
+                    "pdf_local_path": paper.pdf_local_path,
                 }
 
                 # 生成 Markdown

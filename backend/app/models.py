@@ -123,6 +123,11 @@ class Paper(DeclarativeBase):
     rag_indexed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     lancedb_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
 
+    # === Vault 路径追踪字段 ===
+    # 记录论文在 Obsidian Vault 的所有位置（支持论文移动后追踪）
+    # 示例: ["Inbox/PAPER_xxx.md", "96_Papers_Archive/NLP/PAPER_xxx.md"]
+    vault_locations: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True)
+
     def __repr__(self) -> str:
         return f"<Paper(id={self.id}, arxiv_id={self.arxiv_id}, title={self.title[:30]}...)>"
 

@@ -28,7 +28,15 @@ class MarkdownGenerator:
     """Markdown 文件生成器。
 
     优先调用 zhiwei-obsidian 服务，服务不可用时回退到本地实现。
+    支持根据 Tier 动态选择输出目录。
     """
+
+    # Tier 对应的输出目录配置
+    TIER_FOLDERS = {
+        "A": "90-99_系统与归档_System/96_Papers_Archive/重要论文",
+        "B": "Inbox",
+        "C": "Inbox",
+    }
 
     def __init__(self, output_dir: str = None, attachments_dir: str = None, prefer_service: bool = True):
         """初始化生成器。
@@ -46,6 +54,23 @@ class MarkdownGenerator:
         # 确保目录存在
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.attachments_dir.mkdir(parents=True, exist_ok=True)
+
+    def get_output_folder(self, tier: str = None, paper_data: Dict[str, Any] = None) -> Path:
+        """根据 Tier 获取输出目录
+
+        Args:
+            tier: 论文等级（A/B/C）
+            paper_data: 论文数据（可用于更复杂的路由逻辑）
+
+        Returns:
+            输出目录路径
+        """
+        if tier and tier in self.TIER_FOLDERS:
+            folder = self.TIER_FOLDERS[tier]
+            output_path = self.vault_path / folder
+            output_path.mkdir(parents=True, exist_ok=True)
+            return output_path
+        return self.output_dir
 
     def generate_paper_md(
         self,
@@ -94,15 +119,19 @@ class MarkdownGenerator:
         title = paper_data.get("title", "未知标题")
         arxiv_id = paper_data.get("arxiv_id", "")
         content_type = paper_data.get("content_type", "paper")
+        tier = analysis_json.get("tier", "B") if analysis_json else "B"
 
         # 生成文件名（带类型前缀）
         date_str = datetime.now().strftime("%Y-%m-%d")
         safe_title = self._sanitize_filename(title)
         type_prefix = self._get_type_prefix(content_type)
 
+        # 根据Tier选择输出目录
+        output_dir = self.get_output_folder(tier, paper_data)
+
         # Markdown 文件
         md_filename = f"{type_prefix}_{date_str}_{safe_title}.md"
-        md_filepath = self.output_dir / md_filename
+        md_filepath = output_dir / md_filename
 
         # 生成 Markdown 内容（包含 PDF 链接）
         content = self._build_paper_content(
@@ -154,23 +183,60 @@ class MarkdownGenerator:
         paper_data: Dict[str, Any],
         analysis_json: Dict[str, Any],
     ) -> str:
-        """构建 YAML 元数据。"""
+        """构建 YAML 元数据（包含 Paper Analyzer 联动字段）。"""
+        # 基础元数据
+        title = paper_data.get('title', '')
+        source_url = paper_data.get('arxiv_url', '')
+        publish_date = paper_data.get('publish_date', '') or '未知'
+        tags = analysis_json.get('tags', [])
+        tier = analysis_json.get('tier', 'B')
+        ingest_quality = analysis_json.get('ingest_quality', 'Bronze')
+        parser_used = analysis_json.get('parser_used', 'abstract_only')
+        methodology = analysis_json.get('methodology', '')
+        related = analysis_json.get('knowledge_links', [])
+        institutions = paper_data.get('institutions', [])
+        overall_rating = analysis_json.get('overall_rating', 'B')
+
+        # 联动字段（v1.1 状态同步）
+        paper_id = paper_data.get('paper_id', '')
+        arxiv_id = paper_data.get('arxiv_id', '')
+        analyzed = paper_data.get('has_analysis', True)
+        rag_indexed = paper_data.get('rag_indexed', False)
+        analysis_mode = paper_data.get('analysis_mode', '')
+        has_pdf = paper_data.get('pdf_local_path') is not None
+
+        # 构建联动字段块（仅在有关联数据时显示）
+        linkage_block = ""
+        if paper_id or arxiv_id:
+            linkage_lines = []
+            if paper_id:
+                linkage_lines.append(f"paper_id: {paper_id}")
+            if arxiv_id:
+                linkage_lines.append(f"arxiv_id: \"{arxiv_id}\"")
+            linkage_lines.append(f"analyzed: {str(analyzed).lower()}")
+            linkage_lines.append(f"rag_indexed: {str(rag_indexed).lower()}")
+            if analysis_mode:
+                linkage_lines.append(f"analysis_mode: \"{analysis_mode}\"")
+            linkage_lines.append(f"has_pdf: {str(has_pdf).lower()}")
+            linkage_block = "\n# === Paper Analyzer 联动字段 ===\n" + "\n".join(linkage_lines)
+
         return f"""---
-title: "{paper_data.get('title', '')}"
-source_url: "{paper_data.get('arxiv_url', '')}"
-date: {paper_data.get('publish_date', '') or '未知'}
+title: "{title}"
+source_url: "{source_url}"
+date: {publish_date}
 type: paper
 
-tags: {analysis_json.get('tags', [])}
-tier: {analysis_json.get('tier', 'B')}
-ingest_quality: {analysis_json.get('ingest_quality', 'Bronze')}
-parser_used: {analysis_json.get('parser_used', 'abstract_only')}
-methodology: "{analysis_json.get('methodology', '')}"
+tags: {tags}
+tier: {tier}
+ingest_quality: {ingest_quality}
+parser_used: {parser_used}
+methodology: "{methodology}"
 
-related: {analysis_json.get('knowledge_links', [])}
-institutions: {paper_data.get('institutions', [])}
+related: {related}
+institutions: {institutions}
 
-overall_rating: {analysis_json.get('overall_rating', 'B')}
+overall_rating: {overall_rating}
+{linkage_block}
 ---
 """
 

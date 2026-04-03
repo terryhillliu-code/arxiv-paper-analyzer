@@ -135,6 +135,13 @@ class ObsidianClient:
                     "action_items": analysis_json.get("action_items", []) if analysis_json else [],
                     "ingest_quality": analysis_json.get("ingest_quality", "Bronze") if analysis_json else "Bronze",
                     "parser_used": analysis_json.get("parser_used", "abstract_only") if analysis_json else "abstract_only",
+                    # ⭐ v1.1 联动字段
+                    "paper_id": paper_data.get("paper_id"),
+                    "arxiv_id": paper_data.get("arxiv_id"),
+                    "analyzed": paper_data.get("has_analysis", True),
+                    "rag_indexed": paper_data.get("rag_indexed", False),
+                    "analysis_mode": paper_data.get("analysis_mode", ""),
+                    "has_pdf": paper_data.get("pdf_local_path") is not None,
                 },
                 "content": {
                     "report": report,
@@ -156,8 +163,15 @@ class ObsidianClient:
                     "one_line_summary": one_line_summary,
                     "knowledge_links": knowledge_links or [],
                     "action_items": action_items or [],
-                    "ingest_quality": ingest_quality or "Bronze",
-                    "parser_used": parser_used or "abstract_only",
+                    "ingest_quality": "Bronze",
+                    "parser_used": "abstract_only",
+                    # ⭐ v1.1 联动字段（关键字参数模式暂不支持，默认值）
+                    "paper_id": None,
+                    "arxiv_id": None,
+                    "analyzed": True,
+                    "rag_indexed": False,
+                    "analysis_mode": "",
+                    "has_pdf": pdf_path is not None,
                 },
                 "content": {
                     "report": report,
