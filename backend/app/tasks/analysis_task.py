@@ -382,7 +382,7 @@ class AnalysisTaskHandler:
             # 更新 Obsidian 文件的 rag_indexed 字段
             if md_output_path and os.path.exists(md_output_path):
                 try:
-                    self._update_frontmatter_field(md_output_path, "rag_indexed", True)
+                    AnalysisTaskHandler._update_frontmatter_field(md_output_path, "rag_indexed", True)
                     logger.info(f"✅ Obsidian frontmatter 已更新: rag_indexed=True")
                 except Exception as e:
                     logger.warning(f"更新 Obsidian frontmatter 失败: {e}")
