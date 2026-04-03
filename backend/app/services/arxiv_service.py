@@ -640,3 +640,45 @@ class ArxivService:
         )
 
         return total_stats
+
+    @staticmethod
+    async def fetch_by_ids(arxiv_ids: List[str]) -> List[dict]:
+        """根据 arXiv ID 获取论文信息（不存入数据库）。
+
+        Args:
+            arxiv_ids: arXiv ID 列表
+
+        Returns:
+            论文信息列表
+        """
+        import arxiv
+
+        client = arxiv.Client()
+        results = []
+
+        for arxiv_id in arxiv_ids:
+            try:
+                search = arxiv.Search(id_list=[arxiv_id], max_results=1)
+
+                def _fetch_sync():
+                    for result in client.results(search):
+                        return result
+                    return None
+
+                paper = await asyncio.to_thread(_fetch_sync)
+
+                if paper:
+                    results.append({
+                        "arxiv_id": paper.entry_id.split("/")[-1],
+                        "title": paper.title,
+                        "abstract": paper.summary,
+                        "authors": [a.name for a in paper.authors],
+                        "categories": [c for c in paper.categories],
+                        "publish_date": paper.published,
+                        "arxiv_url": paper.entry_id,
+                        "pdf_url": paper.pdf_url,
+                    })
+            except Exception as e:
+                logger.warning(f"获取论文失败 {arxiv_id}: {e}")
+
+        return results
