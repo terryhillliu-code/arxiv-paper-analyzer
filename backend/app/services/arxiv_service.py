@@ -643,10 +643,10 @@ class ArxivService:
 
     @staticmethod
     async def fetch_by_ids(arxiv_ids: List[str]) -> List[dict]:
-        """根据 arXiv ID 获取论文信息（不存入数据库）。
+        """根据 arXiv ID 批量获取论文信息（不存入数据库）。
 
         Args:
-            arxiv_ids: arXiv ID 列表
+            arxiv_ids: arXiv ID 列表（支持批量查询）
 
         Returns:
             论文信息列表
@@ -656,29 +656,35 @@ class ArxivService:
         client = arxiv.Client()
         results = []
 
-        for arxiv_id in arxiv_ids:
-            try:
-                search = arxiv.Search(id_list=[arxiv_id], max_results=1)
+        if not arxiv_ids:
+            return results
 
-                def _fetch_sync():
-                    for result in client.results(search):
-                        return result
-                    return None
+        try:
+            # 批量查询：arXiv API 支持在 id_list 中传入多个 ID
+            search = arxiv.Search(
+                id_list=arxiv_ids,
+                max_results=len(arxiv_ids)
+            )
 
-                paper = await asyncio.to_thread(_fetch_sync)
-
-                if paper:
-                    results.append({
-                        "arxiv_id": paper.entry_id.split("/")[-1],
-                        "title": paper.title,
-                        "abstract": paper.summary,
-                        "authors": [a.name for a in paper.authors],
-                        "categories": [c for c in paper.categories],
-                        "publish_date": paper.published,
-                        "arxiv_url": paper.entry_id,
-                        "pdf_url": paper.pdf_url,
+            def _fetch_sync():
+                papers = []
+                for result in client.results(search):
+                    papers.append({
+                        "arxiv_id": result.entry_id.split("/")[-1],
+                        "title": result.title,
+                        "abstract": result.summary,
+                        "authors": [a.name for a in result.authors],
+                        "categories": [c for c in result.categories],
+                        "publish_date": result.published,
+                        "arxiv_url": result.entry_id,
+                        "pdf_url": result.pdf_url,
                     })
-            except Exception as e:
-                logger.warning(f"获取论文失败 {arxiv_id}: {e}")
+                return papers
+
+            results = await asyncio.to_thread(_fetch_sync)
+            logger.info(f"批量获取 {len(arxiv_ids)} 篇论文，返回 {len(results)} 篇")
+
+        except Exception as e:
+            logger.error(f"批量获取论文失败: {e}")
 
         return results
