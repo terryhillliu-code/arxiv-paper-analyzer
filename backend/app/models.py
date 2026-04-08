@@ -67,7 +67,7 @@ class Paper(DeclarativeBase):
     # 内容类型
     content_type: Mapped[str] = mapped_column(
         String(20), default="paper", nullable=False
-    )  # paper, video, article, report
+    )  # paper, article, report
 
     # 质量等级
     tier: Mapped[Optional[str]] = mapped_column(
@@ -130,6 +130,103 @@ class Paper(DeclarativeBase):
 
     def __repr__(self) -> str:
         return f"<Paper(id={self.id}, arxiv_id={self.arxiv_id}, title={self.title[:30]}...)>"
+
+
+class Video(DeclarativeBase):
+    """视频内容数据模型。
+
+    存储抖音/Bilibili等平台的视频信息及分析结果。
+    """
+
+    __tablename__ = "videos"
+
+    # 主键
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    # 视频基本信息
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    video_id: Mapped[Optional[str]] = mapped_column(
+        String(100), index=True, nullable=True
+    )  # 平台视频ID（BV号/抖音ID等）
+    platform: Mapped[Optional[str]] = mapped_column(
+        String(50), index=True, nullable=True
+    )  # douyin, bilibili, youtube
+    video_url: Mapped[Optional[str]] = mapped_column(
+        String(500), nullable=True
+    )  # 原始链接
+    cover_url: Mapped[Optional[str]] = mapped_column(
+        String(500), nullable=True
+    )  # 封面图
+
+    # 创作者信息
+    speaker: Mapped[Optional[str]] = mapped_column(
+        String(200), nullable=True
+    )  # 演讲者/创作者
+    speaker_id: Mapped[Optional[str]] = mapped_column(
+        String(100), nullable=True
+    )  # 创作者ID
+
+    # 视频元数据
+    duration: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )  # 时长（秒）
+    publish_date: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True
+    )  # 发布日期
+    view_count: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )  # 播放量
+    like_count: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )  # 点赞数
+    comment_count: Mapped[Optional[int]] = mapped_column(
+        Integer, nullable=True
+    )  # 评论数
+
+    # 内容
+    transcript: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True
+    )  # 转录稿
+    description: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True
+    )  # 简介
+
+    # 分析结果
+    has_analysis: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    analysis_report: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    analysis_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+    # 质量等级
+    tier: Mapped[Optional[str]] = mapped_column(
+        String(1), index=True, nullable=True
+    )  # A, B, C
+
+    # 标签与分类
+    tags: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True)
+    category: Mapped[Optional[str]] = mapped_column(
+        String(100), nullable=True
+    )  # 一级分类
+
+    # 知识关联
+    knowledge_links: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True)
+    action_items: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True)
+
+    # Markdown 输出
+    md_output_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+
+    # 元数据
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    def __repr__(self) -> str:
+        title_preview = (self.title[:30] + "...") if len(self.title) > 30 else self.title
+        return f"<Video(id={self.id}, platform={self.platform}, title={title_preview})>"
 
 
 class FetchLog(DeclarativeBase):
