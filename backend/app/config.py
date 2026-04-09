@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     dashscope_api_key: str = ""  # 阿里百炼 API Key
     coding_plan_api_key: str = ""  # Coding Plan API Key
+    zhipu_api_key: str = ""  # 智谱直连 API Key（支持 glm-5.1 推理模型）
     semantic_scholar_api_key: str = ""  # Semantic Scholar API Key (可选，提高限额)
 
     # 数据库配置
@@ -39,7 +40,7 @@ class Settings(BaseSettings):
     pdf_storage_path: str = "./data/pdfs"
 
     # AI 模型配置
-    ai_model: str = "qwen3.5-plus"  # 可选: qwen3.5-plus, glm-5, kimi-k2.5, qwen3-max-2026-01-23, MiniMax-M2.5
+    ai_model: str = "qwen3.5-plus"  # 后台任务使用 qwen3.5-plus（快速稳定）
     ai_max_tokens: int = 8000
 
     # 预定义标签

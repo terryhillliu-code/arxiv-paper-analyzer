@@ -100,8 +100,12 @@ class PDFService:
                                     size_mb = int(content_length) / (1024 * 1024)
                                     if size_mb > max_size_mb:
                                         logger.warning(f"PDF 文件过大 ({size_mb:.1f}MB > {max_size_mb}MB)，跳过下载: {arxiv_id}")
-                                        raise RuntimeError(f"PDF 文件过大 ({size_mb:.1f}MB)，跳过")
+                                        # 抛出特定异常，标记为不可重试
+                                        raise ValueError(f"PDF_TOO_LARGE:{size_mb:.1f}MB")
                                     logger.info(f"PDF 大小: {size_mb:.1f}MB")
+                            except ValueError:
+                                # 文件过大异常直接向上传递
+                                raise
                             except Exception as e:
                                 logger.debug(f"HEAD 请求失败，直接下载: {e}")
 

@@ -12,6 +12,7 @@ import uvicorn
 # 从环境变量读取配置，默认绑定 localhost（安全）
 PORT = int(os.getenv("API_PORT", "8000"))
 HOST = os.getenv("API_HOST", "127.0.0.1")
+DEV_MODE = os.getenv("DEV_MODE", "false").lower() == "true"
 
 
 def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
@@ -55,10 +56,10 @@ if __name__ == "__main__":
             sys.exit(1)
         print(f"✅ 端口 {PORT} 已释放")
 
-    print(f"🚀 启动服务: http://{HOST}:{PORT}")
+    print(f"🚀 启动服务: http://{HOST}:{PORT} (DEV_MODE={DEV_MODE})")
     uvicorn.run(
         "app.main:app",
         host=HOST,
         port=PORT,
-        reload=True,
+        reload=DEV_MODE,
     )

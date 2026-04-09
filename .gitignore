@@ -84,3 +84,12 @@ htmlcov/
 *.bak
 *.tmp
 .cache/
+# Data files
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.heartbeat
+data/*.pid
+
+# Logs
+logs/*.log

@@ -83,8 +83,8 @@ class DatabaseWriteService:
         logger.info(f"📤 任务已入队，队列大小: {self._queue.qsize()}")
 
         try:
-            # 等待写入完成，超时60秒
-            return await asyncio.wait_for(task.future, timeout=60.0)
+            # 等待写入完成，超时180秒（增加以适应高并发）
+            return await asyncio.wait_for(task.future, timeout=180.0)
         except asyncio.TimeoutError:
             logger.error(f"写入超时: paper_id={task.paper_id}")
             return False

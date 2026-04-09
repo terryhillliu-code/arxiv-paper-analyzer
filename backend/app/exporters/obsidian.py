@@ -342,13 +342,14 @@ class ObsidianExporter(BaseExporter):
             import shutil
 
             title = self._get_field(paper, "title", "未命名")
+            arxiv_id = self._get_field(paper, "arxiv_id", "unknown")
             content_type = self._get_field(paper, "content_type", "paper")
             date_str = datetime.now().strftime("%Y-%m-%d")
             safe_title = self._sanitize_filename(title)
             type_prefix = self._get_type_prefix(content_type)
 
-            # Markdown 文件（带类型前缀）
-            md_filename = f"{type_prefix}_{date_str}_{safe_title}.md"
+            # Markdown 文件（带 arxiv_id 确保唯一性，简化格式避免过长）
+            md_filename = f"{type_prefix}_{arxiv_id}_{safe_title[:60]}.md"
             output_dir = self.output_dir if folder == "Inbox" else self.vault_path / folder
             output_dir.mkdir(parents=True, exist_ok=True)
             md_path = output_dir / md_filename
@@ -356,10 +357,10 @@ class ObsidianExporter(BaseExporter):
             # 生成内容
             content = self.export_paper(paper)
 
-            # 复制 PDF
+            # 复制 PDF（也加上 arxiv_id）
             pdf_dest = None
             if pdf_path:
-                pdf_filename = f"{date_str}_{safe_title}.pdf"
+                pdf_filename = f"{arxiv_id}_{safe_title}.pdf"
                 pdf_dest = self.attachments_dir / pdf_filename
                 try:
                     shutil.copy2(pdf_path, pdf_dest)
