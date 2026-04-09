@@ -23,6 +23,17 @@ QUALITY_LOG_PATH = Path(__file__).parent.parent / "logs" / "quality_issues.log"
 PAPERS_DB_PATH = Path(__file__).parent.parent / "data" / "papers.db"
 TASK_DB_PATH = Path(__file__).parent.parent / "data" / "tasks.db"
 
+# 质量检查阈值配置
+QUALITY_THRESHOLDS = {
+    "summary_min": 80,       # 一句话总结最小字数
+    "summary_max": 200,      # 一句话总结最大字数
+    "contribution_min": 25,  # 关键贡献最小字数
+    "min_contributions": 2,  # 最少关键贡献数
+    "min_outline": 2,        # 最少大纲节数
+    "min_tags": 2,           # 最少标签数
+    "task_cooldown_hours": 24,  # 任务创建冷却时间（小时）
+}
+
 
 def _ensure_quality_db():
     """确保问题记录数据库存在"""
@@ -112,40 +123,41 @@ def check_number_fabrication(abstract: str, one_line_summary: str) -> dict:
 def check_deep_quality(analysis_json: dict, abstract: str) -> dict:
     """检查深度分析质量"""
     issues = []
+    T = QUALITY_THRESHOLDS
 
-    # 1. 一句话总结质量（必须80-150字）
+    # 1. 一句话总结质量
     summary = analysis_json.get("one_line_summary", "")
     if summary:
-        if len(summary) < 80:
-            issues.append(("short_summary", f"总结太短({len(summary)}字，需80-150字)"))
-        elif len(summary) > 200:
-            issues.append(("long_summary", f"总结太长({len(summary)}字，需80-150字)"))
+        if len(summary) < T["summary_min"]:
+            issues.append(("short_summary", f"总结太短({len(summary)}字，需{T['summary_min']}-{T['summary_max']}字)"))
+        elif len(summary) > T["summary_max"]:
+            issues.append(("long_summary", f"总结太长({len(summary)}字，需{T['summary_min']}-{T['summary_max']}字)"))
 
-    # 2. 关键贡献质量（每条至少25字）
+    # 2. 关键贡献质量
     contributions = analysis_json.get("key_contributions", [])
     if not contributions or len(contributions) == 0:
         issues.append(("no_contributions", "无关键贡献"))
-    elif len(contributions) < 2:
+    elif len(contributions) < T["min_contributions"]:
         issues.append(("few_contributions", f"关键贡献过少({len(contributions)}条)"))
     else:
         # 检查贡献是否空洞
         for i, contrib in enumerate(contributions[:2]):
             contrib_str = str(contrib)
-            if len(contrib_str) < 25:
+            if len(contrib_str) < T["contribution_min"]:
                 issues.append(("thin_contribution", f"贡献{i+1}内容单薄({len(contrib_str)}字)"))
 
     # 3. 大纲质量
     outline = analysis_json.get("outline", [])
     if not outline or len(outline) == 0:
         issues.append(("no_outline", "无大纲"))
-    elif len(outline) < 2:
+    elif len(outline) < T["min_outline"]:
         issues.append(("thin_outline", f"大纲过简({len(outline)}节)"))
 
     # 4. 标签质量
     tags = analysis_json.get("tags", [])
     if not tags or len(tags) == 0:
         issues.append(("no_tags", "无标签"))
-    elif len(tags) < 2:
+    elif len(tags) < T["min_tags"]:
         issues.append(("few_tags", f"标签过少({len(tags)}个)"))
 
     return {"issues": issues, "issue_count": len(issues)}
@@ -250,7 +262,10 @@ def sample_check(sample_size: int = 5):
 
 
 def _create_force_refresh_tasks(issues):
-    """为问题论文创建force_refresh任务"""
+    """为问题论文创建force_refresh任务
+
+    防止重复创建：检查过去 N 小时内是否已创建过任务
+    """
     import uuid
 
     # 获取唯一的arxiv_id列表
@@ -264,7 +279,10 @@ def _create_force_refresh_tasks(issues):
     c_p = conn_p.cursor()
     c_t = conn_t.cursor()
 
+    cooldown_hours = QUALITY_THRESHOLDS["task_cooldown_hours"]
     created = 0
+    skipped = 0
+
     for arxiv_id in arxiv_ids:
         # 获取paper_id
         c_p.execute('SELECT id FROM papers WHERE arxiv_id=?', (arxiv_id,))
@@ -274,15 +292,17 @@ def _create_force_refresh_tasks(issues):
 
         paper_id = paper[0]
 
-        # 检查是否已有pending/running的force_refresh任务
+        # 检查过去 N 小时内是否创建过任务（无论状态）
+        # 这样可以避免重复创建，即使之前的任务已被取消
         c_t.execute('''
             SELECT id FROM tasks
             WHERE task_type='force_refresh'
-            AND status IN ('pending', 'running')
             AND json_extract(payload, '$.paper_id')=?
-        ''', (paper_id,))
+            AND datetime(created_at) > datetime('now', '-' || ? || ' hours')
+        ''', (paper_id, cooldown_hours))
         if c_t.fetchone():
-            continue  # 已有任务，跳过
+            skipped += 1
+            continue  # 冷却期内，跳过
 
         # 创建任务
         task_id = str(uuid.uuid4())[:8]
@@ -299,6 +319,8 @@ def _create_force_refresh_tasks(issues):
 
     if created > 0:
         print(f"已创建 {created} 个force_refresh任务用于修复")
+    if skipped > 0:
+        print(f"跳过 {skipped} 个任务（冷却期内已存在）")
 
 
 def show_stats():
