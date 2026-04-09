@@ -32,13 +32,6 @@ RETRY_DELAYS = {
     "timeout": 10.0,      # 超时错误用短延迟
 }
 
-# 任务优先级配置（数值越小优先级越高）
-TASK_PRIORITIES = {
-    "batch_analysis": 0,    # 批量分析优先级最高（效率最高）
-    "force_refresh": 1,     # 单篇刷新次之
-    "default": 2,           # 其他任务最低
-}
-
 
 def _get_connection(db_path: Path) -> sqlite3.Connection:
     """获取线程局部的数据库连接。
