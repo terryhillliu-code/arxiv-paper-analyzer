@@ -42,6 +42,8 @@ def _set_sqlite_pragma(dbapi_conn, connection_record):
     cursor.execute("PRAGMA synchronous=NORMAL")
     # 设置缓存大小为负数表示 KB（-64000 = 64MB）
     cursor.execute("PRAGMA cache_size=-64000")
+    # 自动 checkpoint 阈值（1000页 ≈ 4MB）
+    cursor.execute("PRAGMA wal_autocheckpoint=1000")
     cursor.close()
 
 

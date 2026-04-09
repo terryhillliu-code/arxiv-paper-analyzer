@@ -2,11 +2,12 @@
 """后台任务处理器。
 
 持续处理任务队列中的分析任务。
-支持断网重连、任务恢复、健康检查。
+支持断网重连、任务恢复、健康检查、PID锁定防重复启动。
 """
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 from datetime import datetime, timedelta
@@ -25,8 +26,58 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# PID 文件路径
+PID_FILE = Path(__file__).parent.parent / "data" / "worker.pid"
+
 # 全局标志
 _shutdown = False
+
+
+def acquire_pid_lock() -> bool:
+    """获取 PID 锁，防止重复启动。
+
+    Returns:
+        True 如果成功获取锁，False 如果已有其他进程持有
+    """
+    PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    # 检查是否存在 PID 文件
+    if PID_FILE.exists():
+        try:
+            old_pid = int(PID_FILE.read_text().strip())
+            # 检查进程是否还在运行
+            if Path(f"/proc/{old_pid}").exists() or os.path.exists(f"/proc/{old_pid}"):
+                logger.error(f"❌ 已有 Worker 进程运行 (PID: {old_pid})，退出")
+                return False
+            # macOS 检查方式
+            try:
+                os.kill(old_pid, 0)  # 检查进程是否存在
+                logger.error(f"❌ 已有 Worker 进程运行 (PID: {old_pid})，退出")
+                return False
+            except OSError:
+                # 进程不存在，清理旧 PID 文件
+                logger.info(f"清理旧 PID 文件 (进程 {old_pid} 已不存在)")
+                PID_FILE.unlink()
+        except (ValueError, OSError):
+            # PID 文件损坏，清理
+            PID_FILE.unlink()
+
+    # 写入当前 PID
+    PID_FILE.write_text(str(os.getpid()))
+    logger.info(f"✅ PID 锁已获取 (PID: {os.getpid()})")
+    return True
+
+
+def release_pid_lock():
+    """释放 PID 锁"""
+    if PID_FILE.exists():
+        try:
+            current_pid = int(PID_FILE.read_text().strip())
+            if current_pid == os.getpid():
+                PID_FILE.unlink()
+                logger.info("✅ PID 锁已释放")
+        except (ValueError, OSError):
+            pass
 
 
 def signal_handler(signum, frame):
@@ -105,6 +156,14 @@ async def process_tasks(max_concurrent: int = 6):
     # 注册处理器
     register_analysis_handler(task_queue)
 
+    # 注册批量分析处理器
+    try:
+        from app.tasks.batch_analysis_task import register_batch_analysis_handler
+        register_batch_analysis_handler(task_queue)
+        logger.info("已注册 batch_analysis 处理器")
+    except ImportError as e:
+        logger.warning(f"无法注册 batch_analysis 处理器: {e}")
+
     logger.info("=" * 60)
     logger.info("任务处理器启动")
     logger.info(f"最大并发: {max_concurrent}")
@@ -140,7 +199,13 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    # 获取 PID 锁，防止重复启动
+    if not acquire_pid_lock():
+        sys.exit(1)
+
     try:
         asyncio.run(process_tasks(max_concurrent=args.concurrent))
     except KeyboardInterrupt:
         logger.info("任务处理器已停止")
+    finally:
+        release_pid_lock()

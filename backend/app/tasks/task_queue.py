@@ -1,14 +1,16 @@
 """基于 SQLite 的简单任务队列。
 
 支持任务的创建、查询、更新，适合单机部署场景。
+优化：使用线程局部连接池减少连接开销，启用 WAL 模式提高并发。
 """
 
 import asyncio
 import json
 import logging
 import sqlite3
+import threading
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Set
@@ -19,6 +21,37 @@ logger = logging.getLogger(__name__)
 
 # 任务数据库路径
 TASK_DB_PATH = Path(__file__).parent.parent.parent / "data" / "tasks.db"
+
+# 线程局部连接池，减少频繁创建连接的开销
+_thread_local = threading.local()
+
+
+def _get_connection(db_path: Path) -> sqlite3.Connection:
+    """获取线程局部的数据库连接。
+
+    每个线程使用独立的持久连接，减少连接创建开销。
+    启用 WAL 模式提高并发性能。
+    """
+    if not hasattr(_thread_local, 'connections'):
+        _thread_local.connections = {}
+
+    key = str(db_path)
+    if key not in _thread_local.connections:
+        conn = sqlite3.connect(db_path, check_same_thread=False)
+        # 启用 WAL 模式，提高并发读写性能
+        conn.execute("PRAGMA journal_mode=WAL")
+        # 设置锁等待超时（5秒），避免锁竞争立即失败
+        conn.execute("PRAGMA busy_timeout=5000")
+        # 启用同步写入，保证数据安全
+        conn.execute("PRAGMA synchronous=NORMAL")
+        # 增大缓存，减少磁盘 IO
+        conn.execute("PRAGMA cache_size=10000")
+        # 自动 checkpoint 阈值（1000页）
+        conn.execute("PRAGMA wal_autocheckpoint=1000")
+        _thread_local.connections[key] = conn
+        logger.debug(f"创建新数据库连接: {key}")
+
+    return _thread_local.connections[key]
 
 
 class TaskStatus(str, Enum):
@@ -69,9 +102,12 @@ class TaskQueue:
     # 任务超时配置
     DEFAULT_TASK_TIMEOUT = 600  # 默认 10 分钟超时
     TASK_TIMEOUTS = {
-        "analysis": 600,  # 分析任务 10 分钟
-        "summary": 300,   # 摘要任务 5 分钟
-        "fetch": 300,     # 抓取任务 5 分钟
+        "analysis": 600,       # 论文分析任务 10 分钟
+        "batch_analysis": 900, # 批量分析任务 15 分钟（5篇论文）
+        "video_analysis": 300, # 视频分析任务 5 分钟（转录稿通常较短）
+        "summary": 300,        # 摘要任务 5 分钟
+        "fetch": 300,          # 抓取任务 5 分钟
+        "pdf_download": 180,   # PDF 下载任务 3 分钟
     }
 
     def __init__(self, db_path: Path = TASK_DB_PATH, max_concurrent: int = 6):
@@ -83,10 +119,37 @@ class TaskQueue:
         self._active_tasks: set = set()  # 活跃任务追踪
         logger.info(f"任务队列初始化，最大并发: {max_concurrent}")
 
+        # 自动注册已知处理器
+        self._auto_register_handlers()
+
+    def _auto_register_handlers(self):
+        """自动注册已知任务处理器"""
+        try:
+            from app.tasks.analysis_task import AnalysisTaskHandler
+            self._handlers["analysis"] = AnalysisTaskHandler.handle
+            self._handlers["force_refresh"] = AnalysisTaskHandler.handle  # force_refresh 使用 analysis 的 handler
+            logger.info("自动注册任务处理器: analysis, force_refresh")
+        except ImportError:
+            pass
+
+        try:
+            from app.tasks.pdf_download_task import PDFDownloadTaskHandler
+            self._handlers["pdf_download"] = PDFDownloadTaskHandler.handle
+            logger.info("自动注册任务处理器: pdf_download")
+        except ImportError:
+            pass
+
+        try:
+            from app.tasks.video_analysis_task import VideoAnalysisTaskHandler
+            self._handlers["video_analysis"] = VideoAnalysisTaskHandler.handle
+            logger.info("自动注册任务处理器: video_analysis")
+        except ImportError:
+            pass
+
     def _ensure_db(self):
         """确保数据库表存在"""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.db_path)
+        conn = _get_connection(self.db_path)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS tasks (
                 id TEXT PRIMARY KEY,
@@ -103,7 +166,6 @@ class TaskQueue:
             )
         """)
         conn.commit()
-        conn.close()
 
     def register_handler(self, task_type: str, handler: Callable):
         """注册任务处理器"""
@@ -122,7 +184,7 @@ class TaskQueue:
             created_at=datetime.now(),
         )
 
-        conn = sqlite3.connect(self.db_path)
+        conn = _get_connection(self.db_path)
         conn.execute(
             """
             INSERT INTO tasks (id, task_type, payload, status, progress, message, created_at)
@@ -139,19 +201,17 @@ class TaskQueue:
             ),
         )
         conn.commit()
-        conn.close()
 
         logger.info(f"创建任务: {task_id} ({task_type})")
         return task
 
     def get_task(self, task_id: str) -> Optional[Task]:
         """获取任务详情"""
-        conn = sqlite3.connect(self.db_path)
+        conn = _get_connection(self.db_path)
         cursor = conn.execute(
             "SELECT * FROM tasks WHERE id = ?", (task_id,)
         )
         row = cursor.fetchone()
-        conn.close()
 
         if not row:
             return None
@@ -220,27 +280,50 @@ class TaskQueue:
         params.append(task_id)
         sql = f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?"
 
-        conn = sqlite3.connect(self.db_path)
+        conn = _get_connection(self.db_path)
         conn.execute(sql, params)
         conn.commit()
-        conn.close()
 
         logger.debug(f"更新任务 {task_id}: {updates}")
 
-    def get_pending_tasks(self, limit: int = 10) -> list[Task]:
-        """获取待处理的任务"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.execute(
-            """
-            SELECT * FROM tasks
-            WHERE status = 'pending'
-            ORDER BY created_at ASC
-            LIMIT ?
-            """,
-            (limit,),
-        )
+    def get_pending_tasks(self, limit: int = 10, task_type: str = None) -> list[Task]:
+        """获取待处理的任务，优先处理 force_refresh 任务
+
+        Args:
+            limit: 最大返回数量
+            task_type: 可选，只返回指定类型的任务
+        """
+        conn = _get_connection(self.db_path)
+
+        if task_type:
+            # 只获取指定类型的任务
+            cursor = conn.execute(
+                """
+                SELECT * FROM tasks
+                WHERE status = 'pending' AND task_type = ?
+                ORDER BY created_at ASC
+                LIMIT ?
+                """,
+                (task_type, limit),
+            )
+        else:
+            # 获取所有类型，优先处理 force_refresh 和 batch_analysis 任务
+            cursor = conn.execute(
+                """
+                SELECT * FROM tasks
+                WHERE status = 'pending'
+                ORDER BY
+                    CASE
+                        WHEN task_type = 'force_refresh' THEN 0
+                        WHEN task_type = 'batch_analysis' THEN 1
+                        ELSE 2
+                    END,
+                    created_at ASC
+                LIMIT ?
+                """,
+                (limit,),
+            )
         rows = cursor.fetchall()
-        conn.close()
 
         tasks = []
         for row in rows:
@@ -372,17 +455,29 @@ class TaskQueue:
                     )
                     return
 
-    async def run_worker(self, poll_interval: float = 2.0):
-        """运行工作循环"""
+    async def run_worker(self, poll_interval: float = 2.0, task_type: str = None):
+        """运行工作循环
+
+        Args:
+            poll_interval: 轮询间隔（秒）
+            task_type: 可选，只处理指定类型的任务
+        """
         self._running = True
+        self._task_type_filter = task_type
 
         # 启动时恢复 stuck 任务
         self._recover_stuck_tasks()
 
         logger.info("任务队列工作器启动")
+        if task_type:
+            logger.info(f"只处理任务类型: {task_type}")
 
         # 活跃任务集合
         active_tasks = set()
+
+        # 动态轮询间隔
+        current_poll_interval = poll_interval
+        idle_count = 0
 
         while self._running:
             try:
@@ -395,24 +490,31 @@ class TaskQueue:
                     except Exception as e:
                         logger.debug(f"任务异常: {e}")
 
-                # 如果有可用槽位，启动新任务
+                # 如果有可用槽位，启动新任务（批量获取）
                 available_slots = self._semaphore._value if hasattr(self._semaphore, '_value') else 3
-                while len(active_tasks) < available_slots:
-                    tasks = self.get_pending_tasks(limit=1)
-                    if not tasks:
-                        break
+                needed = available_slots - len(active_tasks)
+                if needed > 0:
+                    # 批量获取任务，而不是逐个获取
+                    tasks = self.get_pending_tasks(limit=min(needed, 5), task_type=self._task_type_filter)
+                    for task in tasks:
+                        # 立即更新状态为 running，防止重复处理
+                        self.update_task(task.id, status=TaskStatus.RUNNING, message="开始处理...")
 
-                    # 立即更新状态为 running，防止重复处理
-                    task = tasks[0]
-                    self.update_task(task.id, status=TaskStatus.RUNNING, message="开始处理...")
+                        # 创建任务并添加到活跃集合
+                        task_coro = self._process_task_internal(task)
+                        active_tasks.add(asyncio.create_task(task_coro))
 
-                    # 创建任务并添加到活跃集合
-                    task_coro = self._process_task_internal(task)
-                    active_tasks.add(asyncio.create_task(task_coro))
+                    # 有任务处理时，缩短轮询间隔
+                    if tasks:
+                        current_poll_interval = 0.5
+                        idle_count = 0
 
                 # 如果没有活跃任务且没有待处理任务，等待
                 if not active_tasks:
-                    await asyncio.sleep(poll_interval)
+                    idle_count += 1
+                    # 空闲时逐渐延长轮询间隔（最大 5 秒）
+                    current_poll_interval = min(poll_interval + idle_count * 0.5, 5.0)
+                    await asyncio.sleep(current_poll_interval)
                 else:
                     # 短暂等待，避免忙等待
                     await asyncio.sleep(0.5)
@@ -450,12 +552,10 @@ class TaskQueue:
 
         将超时的 running 任务重置为 pending，使其可以重新处理。
         """
-        from datetime import datetime, timedelta
-
         # 超过 30 分钟的任务视为卡住
         stuck_threshold = (datetime.now() - timedelta(minutes=30)).isoformat()
 
-        conn = sqlite3.connect(self.db_path)
+        conn = _get_connection(self.db_path)
         cursor = conn.cursor()
 
         # 查找卡住的任务
@@ -483,8 +583,6 @@ class TaskQueue:
 
             for task_id, task_type, started_at in stuck_tasks:
                 logger.info(f"已恢复任务: {task_id} ({task_type})")
-
-        conn.close()
 
     def stop(self):
         """停止工作循环"""

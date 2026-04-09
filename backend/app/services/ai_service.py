@@ -2,6 +2,7 @@
 
 支持多种 AI API：
 - 阿里百炼 API (glm-5, qwen-plus 等)
+- 智谱直连 API (glm-5.1, glm-5 等)
 - Anthropic Claude API
 """
 
@@ -26,6 +27,10 @@ from app.prompts.templates import (
     PREDEFINED_TAGS,
     SUMMARY_PROMPT,
     TIER_REEVALUATION_PROMPT,
+    VIDEO_ANALYSIS_PROMPT,
+    VIDEO_JSON_PROMPT,
+    BATCH_LIGHT_PROMPT,
+    DETAIL_PROMPT,
 )
 from app.services.guardrails import analysis_guardrail, CheckResult
 
@@ -40,14 +45,20 @@ RETRY_BACKOFF = 2.0  # 指数退避因子
 class AIService:
     """AI 分析服务。
 
-    支持 Coding Plan API (OpenAI 兼容) 和 Anthropic Claude API。
+    支持 Coding Plan API (OpenAI 兼容)、智谱直连 API 和 Anthropic Claude API。
     """
 
-    # Coding Plan API 支持的模型
+    # Coding Plan API 支持的模型（阿里百炼代理）
     CODING_PLAN_MODELS = ["qwen3.5-plus", "glm-5", "kimi-k2.5", "qwen3-max-2026-01-23", "MiniMax-M2.5"]
 
     # 百炼 API 支持的模型 (备用)
     DASHSCOPE_MODELS = ["qwen-plus", "qwen-turbo", "qwen-max"]
+
+    # 智谱直连 API 支持的模型（推理模型）
+    ZHIPU_MODELS = ["glm-5.1", "glm-5-turbo", "glm-5", "glm-4.7", "glm-4.6", "glm-4.5"]
+
+    # 推理模型（返回 reasoning_content）
+    REASONING_MODELS = ["glm-5.1", "glm-5-turbo", "glm-5"]
 
     def __init__(self):
         """初始化 AI 客户端。"""
@@ -55,11 +66,25 @@ class AIService:
         self.model = settings.ai_model
         self.max_tokens = settings.ai_max_tokens
 
-        # API 超时设置（秒）
-        self.timeout = 120  # 默认 2 分钟超时
+        # 推理模型需要更长超时
+        if self.model in self.REASONING_MODELS:
+            self.timeout = 300  # 推理模型 5 分钟超时
+        else:
+            self.timeout = 120  # 默认 2 分钟超时
 
         # 根据模型选择客户端
-        if self.model in self.CODING_PLAN_MODELS:
+        if self.model in self.ZHIPU_MODELS:
+            # 使用智谱直连 API（支持推理模型）
+            self.client_type = "zhipu"
+            # 从环境变量或配置获取智谱 API Key
+            zhipu_api_key = os.environ.get("ZHIPU_API_KEY", settings.zhipu_api_key or "")
+            self.client = OpenAI(
+                api_key=zhipu_api_key,
+                base_url="https://open.bigmodel.cn/api/paas/v4",
+                timeout=self.timeout,
+            )
+            logger.info(f"使用智谱直连 API，模型: {self.model}, 超时: {self.timeout}s")
+        elif self.model in self.CODING_PLAN_MODELS:
             # 使用 Coding Plan API (OpenAI 兼容格式)
             self.client_type = "coding_plan"
             self.client = OpenAI(
@@ -104,14 +129,21 @@ class AIService:
 
         for attempt in range(MAX_RETRIES):
             try:
-                if self.client_type in ["coding_plan", "dashscope"]:
-                    # Coding Plan API 和百炼 API 都使用 OpenAI 兼容格式
+                if self.client_type in ["zhipu", "coding_plan", "dashscope"]:
+                    # 智谱、Coding Plan、百炼 API 都使用 OpenAI 兼容格式
                     response = self.client.chat.completions.create(
                         model=self.model,
                         messages=[{"role": "user", "content": prompt}],
                         max_tokens=max_tokens,
                     )
-                    return response.choices[0].message.content or ""
+                    # 推理模型可能返回 reasoning_content
+                    content = response.choices[0].message.content or ""
+                    # 检查是否有 reasoning_content（智谱推理模型）
+                    if hasattr(response.choices[0].message, 'reasoning_content'):
+                        reasoning = response.choices[0].message.reasoning_content or ""
+                        if reasoning:
+                            logger.debug(f"推理内容长度: {len(reasoning)} 字符")
+                    return content
                 else:
                     # Anthropic API
                     message = self.client.messages.create(
@@ -301,19 +333,23 @@ class AIService:
             max_tokens = 4000 if quick_mode else self.max_tokens
             report = await asyncio.to_thread(self._call_api, prompt, max_tokens=max_tokens)
 
+            # 移除 AI 自动生成的论文大纲章节（大纲信息从 analysis_json.outline 获取）
+            report = self._strip_outline_section(report)
+
             logger.info(f"深度分析报告生成成功: {len(report)} 字符")
 
-            # 快速模式：用 glm-5 异步提取 JSON（带重试）
+            # 快速模式：用推理模型异步提取 JSON（带重试）
             if quick_mode:
                 from openai import OpenAI as OpenAIClient
                 settings = get_settings()
 
                 try:
-                    quick_model = "glm-5"
+                    # 使用 Coding Plan API (qwen3.5-plus)，统一限流管理
+                    quick_model = "qwen3.5-plus"
                     quick_client = OpenAIClient(
                         api_key=settings.coding_plan_api_key,
                         base_url="https://coding.dashscope.aliyuncs.com/v1",
-                        timeout=180,  # 3 分钟超时
+                        timeout=120,  # Coding Plan 响应更快
                     )
                     prompt_json = QUICK_MODE_JSON_PROMPT.format(
                         report=report,
@@ -338,11 +374,32 @@ class AIService:
                         response_text = response.choices[0].message.content or ""
                         analysis_json = self._parse_json(response_text)
 
-                        # 验证关键字段
-                        is_valid, missing = self.validate_analysis_json(analysis_json)
+                        # 验证关键字段（快速模式检查长度）
+                        is_valid, missing = self.validate_analysis_json(analysis_json, check_length=True)
                         if is_valid:
                             break
                         logger.warning(f"JSON 验证失败 (尝试 {attempt+1}/{MAX_RETRIES})，缺失: {missing}")
+
+                        # 如果是长度问题，尝试扩展总结（最后一次尝试时）
+                        if attempt == MAX_RETRIES - 1 and "one_line_summary太短" in str(missing):
+                            logger.warning("总结太短，尝试扩展...")
+                            expand_prompt = f"""请将以下论文总结扩展到80-150字（中文字符），必须包含：研究问题、方法思路、具体结论。
+
+原始总结：{analysis_json.get('one_line_summary', '')}
+
+要求：展开描述每个要素，用完整句子，不要过于精简。直接输出扩展后的总结文本，不要输出JSON。"""
+                            try:
+                                expand_response = quick_client.chat.completions.create(
+                                    model=quick_model,
+                                    messages=[{"role": "user", "content": expand_prompt}],
+                                    max_tokens=300,
+                                )
+                                expanded = expand_response.choices[0].message.content or ""
+                                if len(expanded) >= 80:
+                                    analysis_json["one_line_summary"] = expanded.strip()
+                                    logger.info(f"总结扩展成功: {len(expanded)}字")
+                            except Exception as e:
+                                logger.warning(f"总结扩展失败: {e}")
 
                     # 补充默认值
                     DEFAULT_VALUES = {
@@ -643,10 +700,6 @@ overall_rating: {analysis_json.get("overall_rating", "B")}
 
 {one_line_summary}
 
-## 📑 论文大纲
-
-{self._render_outline(outline)}
-
 {report}
 
 ## ✅ 行动建议
@@ -663,17 +716,48 @@ overall_rating: {analysis_json.get("overall_rating", "B")}
 """
         return yaml_front + "\n" + content
 
-    def _render_outline(self, outline: List[Dict]) -> str:
-        """渲染大纲为 Markdown 列表。"""
+    def _render_outline(self, outline: List[Dict], level: int = 0) -> str:
+        """递归渲染大纲为 Markdown 列表。"""
         if not outline:
             return "待补充"
 
         lines = []
+        indent = "    " * level  # 每层缩进4空格
         for item in outline:
-            lines.append(f"- {item.get('title', '')}")
-            for child in item.get('children', []):
-                lines.append(f"  - {child.get('title', '')}")
+            title = item.get('title', '')
+            if title:
+                lines.append(f"{indent}- {title}")
+            children = item.get('children', [])
+            if children:
+                lines.append(self._render_outline(children, level + 1))
         return "\n".join(lines)
+
+    def _strip_outline_section(self, report: str) -> str:
+        """移除报告中的论文大纲章节。
+
+        AI 可能会自动生成 "### 📑 论文大纲" 章节，
+        但大纲信息应该从 analysis_json.outline 结构化数据中获取。
+        """
+        original_len = len(report)
+
+        # 匹配并移除 "### 📑 论文大纲" 到下一个 "###" 之间的内容
+        pattern = r'### 📑 论文大纲\s*\n.*?(?=###)'
+        report = re.sub(pattern, '', report, flags=re.DOTALL)
+
+        # 也移除其他可能的大纲格式
+        other_patterns = [
+            r'### 论文大纲\s*\n.*?(?=###)',
+            r'## 论文大纲\s*\n.*?(?=##|###)',
+            r'# 论文大纲\s*\n.*?(?=#)',
+        ]
+        for p in other_patterns:
+            report = re.sub(p, '', report, flags=re.DOTALL)
+
+        new_len = len(report.strip())
+        if original_len != new_len:
+            logger.info(f"已移除论文大纲章节，报告长度从 {original_len} 减少到 {new_len}")
+
+        return report.strip()
 
     def _render_action_items(self, items: List[str]) -> str:
         """渲染行动建议为 checkbox 列表。"""
@@ -691,7 +775,14 @@ overall_rating: {analysis_json.get("overall_rating", "B")}
         # 确保 links 是列表
         if isinstance(links, str):
             links = [links]
-        return " · ".join([f"[[{link.strip('[]')}]]" for link in links])
+        # 处理可能的嵌套列表
+        flattened = []
+        for link in links:
+            if isinstance(link, list):
+                flattened.extend(link)
+            elif isinstance(link, str):
+                flattened.append(link)
+        return " · ".join([f"[[{link.strip('[]')}]]" for link in flattened if isinstance(link, str)])
 
     def _validate_outline(self, outline: List[Dict]) -> bool:
         """验证 outline 格式是否正确。
@@ -722,9 +813,6 @@ overall_rating: {analysis_json.get("overall_rating", "B")}
 
         使用正则从报告中提取基本信息。
         """
-        # 尝试从报告中直接提取 JSON（如果有）
-        import re
-
         # 默认值
         result = {
             "one_line_summary": "",
@@ -887,11 +975,12 @@ overall_rating: {analysis_json.get("overall_rating", "B")}
         return {}
 
     @staticmethod
-    def validate_analysis_json(analysis_json: Dict[str, Any]) -> tuple[bool, List[str]]:
+    def validate_analysis_json(analysis_json: Dict[str, Any], check_length: bool = False) -> tuple[bool, List[str]]:
         """验证分析 JSON 是否包含必要字段。
 
         Args:
             analysis_json: 待验证的 JSON 字典
+            check_length: 是否检查 one_line_summary 长度（快速模式需要）
 
         Returns:
             (是否有效, 缺失字段列表)
@@ -908,7 +997,343 @@ overall_rating: {analysis_json.get("overall_rating", "B")}
             elif field == "one_line_summary" and isinstance(value, str) and value.strip() == "":
                 missing.append(field)
 
+        # 快速模式额外检查总结长度（必须80-150字）
+        if check_length and "one_line_summary" in analysis_json:
+            summary = analysis_json.get("one_line_summary", "")
+            if summary:
+                summary_len = len(summary)
+                if summary_len < 80:
+                    missing.append(f"one_line_summary太短({summary_len}字，需80-150字)")
+                elif summary_len > 150:
+                    missing.append(f"one_line_summary太长({summary_len}字，需80-150字)")
+
         return len(missing) == 0, missing
+
+    async def generate_batch_light(
+        self,
+        papers: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """批量生成论文轻量分析结果（tier, tags, methodology）。
+
+        阶段1：批量处理，容忍少量误差。
+
+        Args:
+            papers: 论文列表，每项包含 {paper_id, title, content, arxiv_id}
+
+        Returns:
+            轻量结果列表，每项包含 {paper_id, tier, tags, methodology}
+        """
+        if not papers:
+            return []
+
+        logger.info(f"阶段1: 批量轻量分析 {len(papers)} 篇论文")
+
+        # 构建批量内容（每篇限制 300 字）
+        papers_content = []
+        for paper in papers:
+            content = paper.get("content", "")[:300]
+            papers_content.append(f"""
+### 论文 ID: {paper.get('paper_id', '未知')}
+
+标题: {paper.get('title', '未知标题')}
+
+摘要: {content}
+
+---""")
+
+        # 格式化 Prompt
+        prompt = BATCH_LIGHT_PROMPT.format(
+            batch_size=len(papers),
+            papers_content="\n".join(papers_content),
+        )
+
+        try:
+            # 调用 API
+            response_text = await asyncio.to_thread(
+                self._call_api, prompt, max_tokens=4096
+            )
+
+            # 解析 JSON 数组
+            results = self._parse_json_array(response_text)
+
+            if not results:
+                logger.error("批量轻量分析返回空结果")
+                return [self._default_light_result(p["paper_id"]) for p in papers]
+
+            # 按 paper_id 匹配
+            matched = self._match_results_by_paper_id(papers, results)
+
+            logger.info(f"阶段1完成: {len([m for m in matched if m.get('tier')])}/{len(papers)} 成功")
+            return matched
+
+        except Exception as e:
+            logger.error(f"批量轻量分析失败: {e}")
+            return [self._default_light_result(p["paper_id"]) for p in papers]
+
+    def _default_light_result(self, paper_id: int) -> Dict[str, Any]:
+        """默认轻量结果"""
+        return {
+            "paper_id": paper_id,
+            "tier": "B",
+            "tags": [],
+            "methodology": "未知",
+        }
+
+    def _match_results_by_paper_id(
+        self,
+        papers: List[Dict[str, Any]],
+        results: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """按 paper_id 匹配结果，确保对应正确。"""
+        paper_id_to_idx = {p["paper_id"]: i for i, p in enumerate(papers)}
+        matched = [None] * len(papers)
+
+        for result in results:
+            paper_id = result.get("paper_id")
+            # 尝试转换为 int
+            if isinstance(paper_id, str):
+                try:
+                    paper_id = int(paper_id)
+                except:
+                    pass
+
+            if paper_id in paper_id_to_idx:
+                idx = paper_id_to_idx[paper_id]
+                matched[idx] = {
+                    "paper_id": papers[idx]["paper_id"],
+                    "tier": result.get("tier", "B"),
+                    "tags": result.get("tags", []),
+                    "methodology": result.get("methodology", "未知"),
+                }
+
+        # 未匹配的使用默认值
+        for i, m in enumerate(matched):
+            if m is None:
+                matched[i] = self._default_light_result(papers[i]["paper_id"])
+                logger.warning(f"论文 {papers[i]['paper_id']} 未匹配到结果，使用默认值")
+
+        return matched
+
+    async def generate_detail(
+        self,
+        title: str,
+        abstract: str,
+        tier: str = "B",
+        tags: List[str] = None,
+        methodology: str = "",
+    ) -> Dict[str, Any]:
+        """生成单篇论文详细分析结果（one_line_summary, key_contributions）。
+
+        阶段2：独立处理，必须准确。
+
+        Args:
+            title: 论文标题
+            abstract: 论文摘要
+            tier: 已确定的 tier
+            tags: 已确定的标签
+            methodology: 已确定的方法类型
+
+        Returns:
+            详细结果，包含 one_line_summary 和 key_contributions
+        """
+        logger.info(f"阶段2: 详细分析 - {title[:30]}...")
+
+        tags_str = ", ".join(tags) if tags else "未分类"
+
+        prompt = DETAIL_PROMPT.format(
+            title=title,
+            abstract=abstract[:1000],
+            tier=tier,
+            tags=tags_str,
+            methodology=methodology,
+        )
+
+        try:
+            # 调用 API
+            response_text = await asyncio.to_thread(
+                self._call_api, prompt, max_tokens=2048
+            )
+
+            # 解析 JSON
+            result = self._parse_json(response_text)
+
+            if not result:
+                logger.error("详细分析返回空结果")
+                return {
+                    "one_line_summary": "",
+                    "key_contributions": [],
+                }
+
+            # 验证 one_line_summary 长度
+            summary = result.get("one_line_summary", "")
+            if len(summary) < 80:
+                logger.warning(f"总结太短 ({len(summary)}字): {title[:30]}")
+
+            return {
+                "one_line_summary": summary,
+                "key_contributions": result.get("key_contributions", []),
+            }
+
+        except Exception as e:
+            logger.error(f"详细分析失败: {e}")
+            return {
+                "one_line_summary": "",
+                "key_contributions": [],
+            }
+
+    def _parse_json(self, text: str) -> Dict[str, Any]:
+        """从文本中解析 JSON 对象。"""
+        # 尝试直接解析
+        try:
+            result = json.loads(text)
+            if isinstance(result, dict):
+                return result
+        except:
+            pass
+
+        # 尝试提取 JSON 对象
+        import re
+        match = re.search(r'\{[^{}]*\}', text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except:
+                pass
+
+        return {}
+
+    def _parse_json_array(self, text: str) -> List[Dict]:
+        """从文本中解析 JSON 数组。"""
+        # 尝试直接解析
+        try:
+            result = json.loads(text)
+            if isinstance(result, list):
+                return result
+        except:
+            pass
+
+        # 尝试提取 JSON 数组
+        import re
+        match = re.search(r'\[\s*\{.*?\}\s*\]', text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except:
+                pass
+
+        return []
+
+    async def generate_video_analysis(
+        self,
+        title: str,
+        transcript: str,
+        duration: Optional[int] = None,
+        speaker: Optional[str] = None,
+        platform: Optional[str] = None,
+        publish_date: Optional[str] = None,
+        video_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """生成视频内容分析报告。
+
+        Args:
+            title: 视频标题
+            transcript: 视频转录稿
+            duration: 视频时长（秒）
+            speaker: 演讲者/创作者
+            platform: 平台（youtube/bilibili等）
+            publish_date: 发布日期
+            video_url: 视频链接
+
+        Returns:
+            包含 report 和 analysis_json 的字典
+        """
+        try:
+            # 格式化时长显示
+            duration_str = "未知"
+            if duration:
+                hours = duration // 3600
+                minutes = (duration % 3600) // 60
+                seconds = duration % 60
+                if hours > 0:
+                    duration_str = f"{hours}:{minutes:02d}:{seconds:02d}"
+                else:
+                    duration_str = f"{minutes}:{seconds:02d}"
+
+            # 格式化视频分析 prompt
+            prompt = VIDEO_ANALYSIS_PROMPT.format(
+                title=title,
+                duration=duration_str,
+                speaker=speaker or "未知",
+                platform=platform or "未知",
+                publish_date=publish_date or "未知",
+                video_url=video_url or "",
+                transcript=transcript[:60000] if len(transcript) > 60000 else transcript,
+            )
+
+            logger.info(f"开始生成视频分析: {title[:30]}...")
+            report = await asyncio.to_thread(self._call_api, prompt, max_tokens=self.max_tokens)
+
+            logger.info(f"视频分析报告生成成功: {len(report)} 字符")
+
+            # 提取结构化数据
+            prompt_json = VIDEO_JSON_PROMPT.format(
+                duration=duration_str,
+                speaker=speaker or "未知",
+                platform=platform or "未知",
+                publish_date=publish_date or "未知",
+                report=report,
+            )
+
+            response_text = await asyncio.to_thread(
+                self._call_api, prompt_json, max_tokens=4096
+            )
+            analysis_json = self._parse_json(response_text)
+
+            # 补充默认值
+            DEFAULT_VALUES = {
+                "tier": "B",
+                "tags": [],
+                "one_line_summary": "",
+                "chapters": [],
+                "key_points": [],
+                "tools_mentioned": [],
+                "resources": [],
+                "code_snippets": [],
+                "target_audience": [],
+                "prerequisites": [],
+                "action_items": [],
+                "knowledge_links": [],
+                "overall_rating": "B",
+                "content_quality": {
+                    "information_density": "medium",
+                    "clarity": "good",
+                    "practical_value": "medium"
+                }
+            }
+            for key, default in DEFAULT_VALUES.items():
+                if key not in analysis_json:
+                    analysis_json[key] = default
+
+            # 存储视频元数据到 analysis_json
+            analysis_json["video_metadata"] = {
+                "duration": duration,
+                "speaker": speaker,
+                "platform": platform,
+                "video_url": video_url,
+            }
+
+            logger.info(f"视频分析完成: tier={analysis_json.get('tier', 'B')}")
+            return {
+                "report": report,
+                "analysis_json": analysis_json,
+            }
+
+        except Exception as e:
+            logger.error(f"生成视频分析失败: {e}", exc_info=True)
+            return {
+                "report": "",
+                "analysis_json": {},
+            }
 
 
 # 全局实例

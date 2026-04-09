@@ -6,6 +6,8 @@
 
 import logging
 import os
+import re
+from pathlib import Path
 from typing import Dict, Any
 
 from app.database import async_session_maker
@@ -20,8 +22,8 @@ from sqlalchemy import select
 import json as json_module
 
 
-def validate_analysis_result(analysis_json: dict, report: str) -> tuple[bool, list]:
-    """验证分析结果是否完整
+def validate_analysis_result(analysis_json: dict, report: str, abstract: str = "") -> tuple[bool, list]:
+    """验证分析结果是否完整且符合质量标准
 
     Returns:
         (is_valid, missing_fields)
@@ -42,7 +44,7 @@ def validate_analysis_result(analysis_json: dict, report: str) -> tuple[bool, li
     # 检查关键字段
     required_fields = {
         "tier": lambda x: x in ["A", "B", "C"],
-        "one_line_summary": lambda x: x and len(x) > 10,
+        "one_line_summary": lambda x: x and len(x) >= 10,
         "outline": lambda x: x and len(x) > 0,
         "key_contributions": lambda x: x and len(x) > 0,
     }
@@ -51,6 +53,33 @@ def validate_analysis_result(analysis_json: dict, report: str) -> tuple[bool, li
         value = analysis_json.get(field)
         if not value or not validator(value):
             missing.append(field)
+
+    # === 质量检查 ===
+    # 1. 一句话总结长度检查（应为80-150字）
+    summary = analysis_json.get("one_line_summary", "")
+    if summary and len(summary) < 80:
+        missing.append(f"总结过短({len(summary)}字，需80-150字)")
+    elif summary and len(summary) > 200:
+        missing.append(f"总结过长({len(summary)}字，需80-150字)")
+
+    # 2. 关键贡献质量检查（每条至少25字）
+    contributions = analysis_json.get("key_contributions", [])
+    if contributions:
+        for i, contrib in enumerate(contributions[:3]):  # 检查前3条
+            contrib_str = str(contrib)
+            if len(contrib_str) < 25:
+                missing.append(f"贡献{i+1}过短({len(contrib_str)}字)")
+
+    # 3. 数字编造检查（如果提供了摘要）
+    if abstract and summary:
+        # 提取总结中的百分比和倍数
+        numbers_in_summary = re.findall(r'\d+\.?\d*[%倍]', summary)
+        fabricated = []
+        for num in numbers_in_summary:
+            if num not in abstract:
+                fabricated.append(num)
+        if fabricated:
+            missing.append(f"疑似编造数字{fabricated}")
 
     return len(missing) == 0, missing
 
@@ -69,8 +98,6 @@ class AnalysisTaskHandler:
             field: 字段名
             value: 字段值
         """
-        import re
-
         with open(filepath, 'r', encoding='utf-8') as f:
             content = f.read()
 
@@ -127,8 +154,9 @@ class AnalysisTaskHandler:
         payload = task.payload
         paper_id = payload.get("paper_id")
         use_mineru = payload.get("use_mineru", False)
-        force_refresh = payload.get("force_refresh", False)
-        quick_mode = payload.get("quick_mode", False)  # 快速模式：只用摘要
+        # force_refresh任务类型自动设置force_refresh=True
+        force_refresh = payload.get("force_refresh", False) or task.task_type == "force_refresh"
+        quick_mode = payload.get("quick_mode", True)  # 快速模式：只用摘要（默认True）
 
         if not paper_id:
             raise ValueError("缺少 paper_id")
@@ -170,13 +198,20 @@ class AnalysisTaskHandler:
         content = paper_full_text
         content_metadata = {}
 
-        # 快速模式：直接使用摘要
+        # 快速模式：直接使用摘要，绝不下载PDF
         if quick_mode:
             logger.info(f"快速模式: 使用摘要分析 {paper_arxiv_id}")
             content = paper_abstract
             if not content:
                 content = paper_full_text  # 回退到全文
-        # 常规模式：下载 PDF 并解析
+            if not content:
+                logger.warning(f"快速模式无内容，跳过: {paper_arxiv_id}")
+                return {
+                    "status": "failed",
+                    "error": "quick_mode缺少摘要和全文",
+                    "paper_id": paper_id,
+                }
+        # 常规模式：下载 PDF 并解析（仅当quick_mode=False时执行）
         elif not content and paper_pdf_url and paper_arxiv_id:
             try:
                 logger.info(f"下载 PDF: {paper_arxiv_id}")
@@ -210,7 +245,7 @@ class AnalysisTaskHandler:
         if not content:
             raise ValueError("论文缺少摘要和全文内容，无法分析")
 
-        # ========== 阶段3: AI 分析（可并行） ==========
+        # ========== 阶段3: AI 分析 ==========
         queue.update_task(task.id, progress=30, message="生成深度分析报告...")
         logger.info(f"开始 AI 分析: {paper_arxiv_id}")
 
@@ -272,7 +307,7 @@ class AnalysisTaskHandler:
         md_output_path = None
 
         # ========== 验证分析结果完整性 ==========
-        is_valid, missing_fields = validate_analysis_result(analysis_json, analysis_report)
+        is_valid, missing_fields = validate_analysis_result(analysis_json, analysis_report, paper_abstract)
         if not is_valid:
             logger.error(f"❌ 分析结果验证失败: {missing_fields}")
             # 验证失败，不写入结果，返回失败状态
@@ -386,6 +421,42 @@ class AnalysisTaskHandler:
                     logger.info(f"✅ Obsidian frontmatter 已更新: rag_indexed=True")
                 except Exception as e:
                     logger.warning(f"更新 Obsidian frontmatter 失败: {e}")
+
+        # ========== 阶段7: 创建PDF下载任务 (异步，不阻塞) ==========
+        # 快速分析完成后，创建PDF下载任务（用于存档、深度分析、RAG）
+        if quick_mode and paper_pdf_url and paper_arxiv_id:
+            try:
+                queue.create_task("pdf_download", {
+                    "paper_id": paper_id,
+                    "arxiv_id": paper_arxiv_id,
+                    "pdf_url": paper_pdf_url,
+                    "trigger_deep_analysis": False,  # 可配置
+                })
+                logger.info(f"📥 已创建PDF下载任务: {paper_arxiv_id}")
+            except Exception as e:
+                logger.warning(f"创建PDF下载任务失败: {e}")
+
+        # ========== 阶段8: 标记质量问题已解决 ==========
+        # 如果是重新分析（force_refresh），标记质量问题已解决
+        if force_refresh and paper_arxiv_id:
+            try:
+                import sqlite3
+                quality_db = Path(__file__).parent.parent.parent / "data" / "quality_issues.db"
+                if quality_db.exists():
+                    conn = sqlite3.connect(str(quality_db), timeout=5.0)
+                    conn.execute("PRAGMA busy_timeout=5000")
+                    c = conn.cursor()
+                    c.execute('''
+                        UPDATE quality_issues
+                        SET resolved = 1, resolved_at = datetime('now')
+                        WHERE arxiv_id = ? AND resolved = 0
+                    ''', (paper_arxiv_id,))
+                    if c.rowcount > 0:
+                        logger.info(f"✅ 已标记 {c.rowcount} 个质量问题为已解决: {paper_arxiv_id}")
+                    conn.commit()
+                    conn.close()
+            except Exception as e:
+                logger.warning(f"标记质量问题失败: {e}")
 
         return {
             "paper_id": paper_id,
