@@ -39,9 +39,6 @@ TASK_PRIORITIES = {
     "default": 2,           # 其他任务最低
 }
 
-# 任务饥饿阈值（秒）- 超过此时间的低优先级任务将被提升
-TASK_STARVATION_THRESHOLD = 1800  # 30 分钟
-
 
 def _get_connection(db_path: Path) -> sqlite3.Connection:
     """获取线程局部的数据库连接。
@@ -307,7 +304,6 @@ class TaskQueue:
         """获取待处理的任务，优先处理 batch_analysis 任务
 
         优先级: batch_analysis > force_refresh > 其他
-        防饥饿: force_refresh 等待超过 30 分钟后提升为最高优先级
 
         Args:
             limit: 最大返回数量
@@ -327,7 +323,7 @@ class TaskQueue:
                 (task_type, limit),
             )
         else:
-            # 获取所有类型，优先处理 batch_analysis，但防止 force_refresh 饥饿
+            # 获取所有类型，优先处理 batch_analysis
             cursor = conn.execute(
                 """
                 SELECT * FROM tasks
@@ -335,15 +331,13 @@ class TaskQueue:
                 ORDER BY
                     CASE
                         WHEN task_type = 'batch_analysis' THEN 0
-                        WHEN task_type = 'force_refresh'
-                             AND datetime(created_at) < datetime('now', '-' || ? || ' seconds') THEN 0
                         WHEN task_type = 'force_refresh' THEN 1
                         ELSE 2
                     END,
                     created_at ASC
                 LIMIT ?
                 """,
-                (TASK_STARVATION_THRESHOLD, limit),
+                (limit,),
             )
         rows = cursor.fetchall()
 
