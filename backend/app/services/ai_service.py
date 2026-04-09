@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from openai import OpenAI, APIError, APIConnectionError, RateLimitError
 import anthropic
+import httpx
 
 from app.config import get_settings
 from app.prompts.templates import (
@@ -70,7 +71,7 @@ class AIService:
         if self.model in self.REASONING_MODELS:
             self.timeout = 300  # 推理模型 5 分钟超时
         else:
-            self.timeout = 120  # 默认 2 分钟超时
+            self.timeout = 180  # 默认 3 分钟超时（阶段2需要更长）
 
         # 根据模型选择客户端
         if self.model in self.ZHIPU_MODELS:
@@ -1124,7 +1125,7 @@ overall_rating: {analysis_json.get("overall_rating", "B")}
     ) -> Dict[str, Any]:
         """生成单篇论文详细分析结果（one_line_summary, key_contributions）。
 
-        阶段2：独立处理，必须准确。
+        阶段2：独立处理，必须准确。使用真正的异步 HTTP 调用。
 
         Args:
             title: 论文标题
@@ -1149,10 +1150,8 @@ overall_rating: {analysis_json.get("overall_rating", "B")}
         )
 
         try:
-            # 调用 API
-            response_text = await asyncio.to_thread(
-                self._call_api, prompt, max_tokens=2048
-            )
+            # 使用真正的异步 HTTP 调用
+            response_text = await self._call_api_async(prompt, max_tokens=2048)
 
             # 解析 JSON
             result = self._parse_json(response_text)
@@ -1180,6 +1179,106 @@ overall_rating: {analysis_json.get("overall_rating", "B")}
                 "one_line_summary": "",
                 "key_contributions": [],
             }
+
+    async def _call_api_async(self, prompt: str, max_tokens: Optional[int] = None) -> str:
+        """异步调用 AI API（使用 httpx.AsyncClient 实现真正的异步）。
+
+        Args:
+            prompt: 输入提示词
+            max_tokens: 最大输出 token 数
+
+        Returns:
+            模型响应文本
+        """
+        max_tokens = max_tokens or self.max_tokens
+        settings = get_settings()
+
+        # 构建 API 配置
+        if self.client_type == "coding_plan":
+            base_url = "https://coding.dashscope.aliyuncs.com/v1"
+            api_key = settings.coding_plan_api_key
+        elif self.client_type == "zhipu":
+            base_url = "https://open.bigmodel.cn/api/paas/v4"
+            api_key = os.environ.get("ZHIPU_API_KEY", settings.zhipu_api_key or "")
+        elif self.client_type == "dashscope":
+            base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            api_key = settings.dashscope_api_key
+        else:
+            # Anthropic: 回退到线程池
+            return await asyncio.to_thread(self._call_api, prompt, max_tokens)
+
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+        }
+
+        # 带重试的异步调用
+        last_error = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    response = await client.post(
+                        f"{base_url}/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json=payload,
+                    )
+                    response.raise_for_status()
+
+                    # 安全解析 JSON
+                    try:
+                        data = response.json()
+                    except json.JSONDecodeError as e:
+                        logger.error(f"JSON 解析失败: {e}, body={response.text[:100]}")
+                        raise
+
+                    # 安全获取内容
+                    choices = data.get("choices", [])
+                    if not choices:
+                        logger.warning(f"API 返回空 choices: model={self.model}")
+                        return ""
+
+                    content = choices[0].get("message", {}).get("content", "")
+                    if not content:
+                        logger.warning(f"API 返回空内容: model={self.model}, id={data.get('id', 'unknown')}")
+
+                    return content or ""
+
+            except httpx.TimeoutException as e:
+                last_error = e
+                logger.warning(f"API 超时 (attempt {attempt+1}/{MAX_RETRIES}, {self.timeout}s): {e}")
+                if attempt < MAX_RETRIES - 1:
+                    delay = RETRY_DELAY * (RETRY_BACKOFF ** attempt)
+                    logger.info(f"等待 {delay}s 后重试...")
+                    await asyncio.sleep(delay)
+
+            except httpx.HTTPStatusError as e:
+                # 429 限流错误需要重试
+                if e.response.status_code == 429:
+                    last_error = e
+                    logger.warning(f"API 限流 (attempt {attempt+1}/{MAX_RETRIES}): 429")
+                    if attempt < MAX_RETRIES - 1:
+                        delay = RETRY_DELAY * (RETRY_BACKOFF ** attempt) * 2  # 限流加倍等待
+                        logger.info(f"限流，等待 {delay}s 后重试...")
+                        await asyncio.sleep(delay)
+                else:
+                    # 其他 HTTP 错误不重试
+                    logger.error(f"HTTP 错误: {e.response.status_code}, body={e.response.text[:200]}")
+                    raise
+
+            except Exception as e:
+                last_error = e
+                logger.error(f"API 调用异常 (attempt {attempt+1}): type={type(e).__name__}, msg={e}")
+                if attempt < MAX_RETRIES - 1:
+                    delay = RETRY_DELAY * (RETRY_BACKOFF ** attempt)
+                    await asyncio.sleep(delay)
+
+        # 所有重试失败
+        logger.error(f"API 调用失败，已重试 {MAX_RETRIES} 次: {last_error}")
+        raise last_error
 
     def _parse_json(self, text: str) -> Dict[str, Any]:
         """从文本中解析 JSON 对象。"""
