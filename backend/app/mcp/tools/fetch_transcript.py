@@ -283,7 +283,7 @@ class FetchVideoTranscriptTool(BaseTool):
             )
 
             if process.returncode != 0:
-                logger.warning(f"yt-dlp 获取 Bilibili 失败: {stderr.decode()[:200]}")
+                logger.warning(f"yt-dlp 获取 Bilibili 失败: {(stderr or b'').decode()[:200]}")
                 return await self._fetch_video_info_only(url)
 
             video_info = json.loads(stdout.decode())
@@ -326,7 +326,7 @@ class FetchVideoTranscriptTool(BaseTool):
             )
 
             if process.returncode != 0:
-                logger.warning(f"yt-dlp 获取抖音失败: {stderr.decode()[:200]}")
+                logger.warning(f"yt-dlp 获取抖音失败: {(stderr or b'').decode()[:200]}")
                 raise RuntimeError("无法获取抖音视频信息")
 
             video_info = json.loads(stdout.decode())
@@ -353,30 +353,36 @@ class FetchVideoTranscriptTool(BaseTool):
         """仅获取视频信息（无字幕时回退）"""
         import json
 
-        process = await asyncio.create_subprocess_exec(
-            "yt-dlp", "--skip-download", "--print", "json", url,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "yt-dlp", "--skip-download", "--print", "json", url,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
 
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(),
-            timeout=60
-        )
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=60
+            )
 
-        if process.returncode != 0:
-            raise RuntimeError(f"获取视频信息失败: {stderr.decode()[:100]}")
+            if process.returncode != 0:
+                raise RuntimeError(f"获取视频信息失败: {(stderr or b'').decode()[:100]}")
 
-        video_info = json.loads(stdout.decode())
-        title = video_info.get("title", "")
-        description = video_info.get("description", "") or title
+            video_info = json.loads(stdout.decode())
+            title = video_info.get("title", "")
+            description = video_info.get("description", "") or title
 
-        return description, {
-            "title": title,
-            "duration": video_info.get("duration", 0),
-            "speaker": video_info.get("uploader", ""),
-            "video_id": video_info.get("id", ""),
-        }
+            return description, {
+                "title": title,
+                "duration": video_info.get("duration", 0),
+                "speaker": video_info.get("uploader", ""),
+                "video_id": video_info.get("id", ""),
+            }
+
+        except asyncio.TimeoutError:
+            raise RuntimeError("获取视频信息超时")
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"解析视频信息失败: {e}")
 
     def _extract_subtitle_from_info(self, video_info: Dict[str, Any]) -> str:
         """从视频信息中提取字幕"""

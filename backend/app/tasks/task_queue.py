@@ -25,6 +25,13 @@ TASK_DB_PATH = Path(__file__).parent.parent.parent / "data" / "tasks.db"
 # 线程局部连接池，减少频繁创建连接的开销
 _thread_local = threading.local()
 
+# 重试延迟配置（秒）
+RETRY_DELAYS = {
+    "rate_limit": 60.0,   # Rate Limit (429) 用长延迟
+    "network": 10.0,      # 网络错误用短延迟
+    "timeout": 10.0,      # 超时错误用短延迟
+}
+
 
 def _get_connection(db_path: Path) -> sqlite3.Connection:
     """获取线程局部的数据库连接。
@@ -425,7 +432,7 @@ class TaskQueue:
                 logger.error(f"任务 {task.id} 超时: {e}")
                 if attempt < max_retries:
                     # 超时错误使用较短延迟
-                    retry_delay = 10.0
+                    retry_delay = RETRY_DELAYS["timeout"]
                     logger.info(f"任务 {task.id} 将在 {retry_delay} 秒后重试...")
                     await asyncio.sleep(retry_delay)
                 else:
@@ -448,7 +455,7 @@ class TaskQueue:
 
                 if (is_rate_limit or is_network_error) and attempt < max_retries:
                     # Rate Limit 用长延迟，网络错误用短延迟
-                    retry_delay = 60.0 if is_rate_limit else 10.0
+                    retry_delay = RETRY_DELAYS["rate_limit"] if is_rate_limit else RETRY_DELAYS["network"]
                     logger.info(f"{is_rate_limit and 'Rate Limit' or '网络错误'}，任务 {task.id} 将在 {retry_delay} 秒后重试...")
                     await asyncio.sleep(retry_delay)
                 else:
