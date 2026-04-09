@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.database import init_db
-from app.routers import papers, tasks
+from app.routers import papers, tasks, videos
 from app.middleware.rate_limit import RateLimitMiddleware
 
 # 配置日志
@@ -102,6 +102,7 @@ if RATE_LIMIT_ENABLED:
 # 注册路由
 app.include_router(papers.router)
 app.include_router(tasks.router)
+app.include_router(videos.router)
 
 
 # 全局异常处理器

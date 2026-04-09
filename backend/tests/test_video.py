@@ -286,5 +286,97 @@ class TestVideoAnalysisTaskHandler:
             assert result["message"] == "已有分析"
 
 
+class TestVideoRouter:
+    """视频 API 路由测试"""
+
+    def test_video_base_schema(self):
+        """测试 VideoBase Schema"""
+        from app.schemas import VideoBase
+
+        data = VideoBase(
+            title="测试视频",
+            platform="bilibili",
+            speaker="创作者",
+            duration=180,
+        )
+
+        assert data.title == "测试视频"
+        assert data.platform == "bilibili"
+        assert data.duration == 180
+
+    def test_video_analysis_request(self):
+        """测试 VideoAnalysisRequest Schema"""
+        from app.schemas import VideoAnalysisRequest
+
+        req = VideoAnalysisRequest(video_id=123)
+        assert req.video_id == 123
+        assert req.force_refresh == False
+
+        req2 = VideoAnalysisRequest(video_id=456, force_refresh=True)
+        assert req2.force_refresh == True
+
+    def test_video_list_response(self):
+        """测试 VideoListResponse Schema"""
+        from app.schemas import VideoListResponse, VideoCard
+        from datetime import datetime
+
+        videos = [
+            VideoCard(
+                id=1,
+                title="视频1",
+                platform="youtube",
+                created_at=datetime.now(),
+            )
+        ]
+
+        response = VideoListResponse(
+            videos=videos,
+            total=1,
+            page=1,
+            page_size=10,
+            total_pages=1,
+        )
+
+        assert response.total == 1
+        assert len(response.videos) == 1
+
+
+class TestFetchTranscriptToolSecurity:
+    """视频转录工具安全测试"""
+
+    def test_url_whitelist_allowed(self):
+        """测试 URL 白名单 - 允许的域名"""
+        from app.mcp.tools.fetch_transcript import FetchVideoTranscriptTool
+
+        tool = FetchVideoTranscriptTool()
+        assert tool._validate_url("https://www.bilibili.com/video/BV123") == True
+        assert tool._validate_url("https://b23.tv/abc123") == True
+        assert tool._validate_url("https://www.douyin.com/video/123") == True
+        assert tool._validate_url("https://www.youtube.com/watch?v=abc") == True
+        assert tool._validate_url("https://youtu.be/abc") == True
+
+    def test_url_whitelist_blocked(self):
+        """测试 URL 白名单 - 阻止的域名"""
+        from app.mcp.tools.fetch_transcript import FetchVideoTranscriptTool
+
+        tool = FetchVideoTranscriptTool()
+        assert tool._validate_url("https://malicious-site.com/video") == False
+        assert tool._validate_url("https://evil.com/fake-bilibili") == False
+        assert tool._validate_url("https://fake-youtube.com/watch") == False
+
+    def test_platform_detection(self):
+        """测试平台检测"""
+        from app.mcp.tools.fetch_transcript import FetchVideoTranscriptTool
+
+        tool = FetchVideoTranscriptTool()
+        assert tool._detect_platform("https://www.bilibili.com/video/BV123") == "bilibili"
+        assert tool._detect_platform("https://b23.tv/abc123") == "bilibili"
+        assert tool._detect_platform("https://www.douyin.com/video/123") == "douyin"
+        assert tool._detect_platform("https://v.douyin.com/abc") == "douyin"
+        assert tool._detect_platform("https://www.youtube.com/watch?v=abc") == "youtube"
+        assert tool._detect_platform("https://youtu.be/abc") == "youtube"
+        assert tool._detect_platform("https://example.com/video") is None
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

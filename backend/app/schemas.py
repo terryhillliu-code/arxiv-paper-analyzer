@@ -259,3 +259,82 @@ class DailyTrendingResponse(BaseModel):
     days: List[DailyTrendingPapers] = Field(description="每日热门论文列表")
     total_days: int = Field(description="返回的天数")
     total_papers: int = Field(description="论文总数")
+
+
+# ==================== 视频相关 Schema ====================
+
+
+class VideoBase(BaseModel):
+    """视频基础字段"""
+
+    title: str
+    video_id: Optional[str] = None
+    platform: Optional[str] = None  # douyin, bilibili, youtube
+    video_url: Optional[str] = None
+    speaker: Optional[str] = None
+    duration: Optional[int] = None  # 秒
+
+
+class VideoCard(VideoBase):
+    """视频列表卡片"""
+
+    id: int
+    has_analysis: bool = False
+    view_count: Optional[int] = None
+    tier: Optional[str] = None
+    tags: Optional[List[str]] = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class VideoDetail(VideoCard):
+    """视频详情"""
+
+    cover_url: Optional[str] = None
+    speaker_id: Optional[str] = None
+    publish_date: Optional[datetime] = None
+    like_count: Optional[int] = None
+    comment_count: Optional[int] = None
+    description: Optional[str] = None
+    transcript: Optional[str] = None
+    analysis_report: Optional[str] = None
+    analysis_json: Optional[Dict[str, Any]] = None
+    knowledge_links: Optional[List[str]] = None
+    action_items: Optional[List[str]] = None
+    md_output_path: Optional[str] = None
+
+
+class VideoListResponse(BaseModel):
+    """视频列表响应"""
+
+    videos: List[VideoCard]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+class VideoAnalysisRequest(BaseModel):
+    """视频分析请求"""
+
+    video_id: int = Field(..., description="视频ID")
+    force_refresh: bool = Field(default=False, description="是否强制重新分析")
+
+
+class VideoAnalysisResponse(BaseModel):
+    """视频分析响应"""
+
+    video_id: int
+    status: str = Field(description="状态: pending, processing, completed, failed")
+    report: Optional[str] = Field(default=None, description="分析报告")
+    message: str = Field(default="", description="状态消息或错误信息")
+
+
+class FetchVideoTranscriptRequest(BaseModel):
+    """获取视频转录稿请求"""
+
+    url: str = Field(..., description="视频URL")
+    title: Optional[str] = Field(default=None, description="标题（可选）")
+    speaker: Optional[str] = Field(default=None, description="创作者（可选）")
+    create_record: bool = Field(default=True, description="是否创建数据库记录")

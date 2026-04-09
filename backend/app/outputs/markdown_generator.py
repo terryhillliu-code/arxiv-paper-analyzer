@@ -348,3 +348,126 @@ overall_rating: {overall_rating}
             "report": "REPORT",
         }
         return type_prefixes.get(content_type, "NOTE")
+
+    def generate_video_md(
+        self,
+        video_data: Dict[str, Any],
+        analysis_json: Dict[str, Any],
+        report: str,
+    ) -> Dict[str, str]:
+        """生成视频 Markdown 文件。
+
+        公开方法，用于生成视频内容的 Markdown 输出。
+
+        Args:
+            video_data: 视频基础信息
+            analysis_json: 分析结果 JSON
+            report: 分析报告
+
+        Returns:
+            包含 md_path 的字典
+        """
+        title = video_data.get("title", "未命名视频")
+        platform = video_data.get("platform", "")
+        video_id = video_data.get("video_id", "")
+        speaker = video_data.get("speaker", "")
+        video_url = video_data.get("video_url", "")
+
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        safe_title = self._sanitize_filename(title)
+
+        # 文件名
+        if video_id:
+            md_filename = f"VIDEO_{video_id}_{date_str}_{safe_title}.md"
+        else:
+            md_filename = f"VIDEO_{date_str}_{safe_title}.md"
+
+        md_filepath = self.output_dir / md_filename
+
+        # 生成内容
+        content = self._build_video_content(
+            video_data=video_data,
+            analysis_json=analysis_json,
+            report=report,
+        )
+
+        # 写入文件
+        with open(md_filepath, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        logger.info(f"视频 Markdown 生成成功: {md_filepath}")
+        return {"md_path": str(md_filepath)}
+
+    def _build_video_content(
+        self,
+        video_data: Dict[str, Any],
+        analysis_json: Dict[str, Any],
+        report: str,
+    ) -> str:
+        """构建视频 Markdown 内容。"""
+        title = video_data.get("title", "未命名视频")
+        platform = video_data.get("platform", "")
+        speaker = video_data.get("speaker", "")
+        duration = video_data.get("duration", 0)
+        video_url = video_data.get("video_url", "")
+        publish_date = video_data.get("publish_date", "") or "未知"
+
+        tier = analysis_json.get("tier", "B")
+        tags = analysis_json.get("tags", [])
+        knowledge_links = analysis_json.get("knowledge_links", [])
+        action_items = analysis_json.get("action_items", [])
+
+        # 格式化时长
+        if duration:
+            hours = duration // 3600
+            minutes = (duration % 3600) // 60
+            seconds = duration % 60
+            if hours > 0:
+                duration_str = f"{hours}:{minutes:02d}:{seconds:02d}"
+            else:
+                duration_str = f"{minutes}:{seconds:02d}"
+        else:
+            duration_str = "未知"
+
+        # YAML 元数据
+        yaml_content = f"""---
+title: "{title}"
+type: video
+platform: "{platform}"
+speaker: "{speaker}"
+duration: "{duration_str}"
+date: {publish_date}
+video_url: "{video_url}"
+tags: {tags}
+tier: {tier}
+---
+"""
+
+        # 正文
+        tier_text = {"A": "⭐⭐⭐ 深度干货", "B": "⭐⭐ 实用向导", "C": "⭐ 一般参考"}
+
+        body = f"""# {title}
+
+> **内容等级**：{tier_text.get(tier, "⭐⭐ 实用向导")} | **平台**：{platform} | **时长**：{duration_str}
+
+## 📋 视频信息
+
+| 项目 | 内容 |
+|------|------|
+| 创作者 | {speaker or '未知'} |
+| 平台 | {platform or '未知'} |
+| 时长 | {duration_str} |
+| 链接 | [{video_url}]({video_url}) |
+
+{report}
+
+## ✅ 行动建议
+
+{self._format_action_items(action_items)}
+
+## 🔗 知识关联
+
+{self._format_knowledge_links(knowledge_links)}
+"""
+
+        return yaml_content + "\n" + body

@@ -14,6 +14,7 @@ from .export_obsidian import ExportToObsidianTool
 from .export_bibtex import ExportToBibtexTool
 from .search_obsidian import SearchObsidianTool
 from .read_obsidian import ReadObsidianTool
+from .fetch_transcript import FetchVideoTranscriptTool
 
 __all__ = [
     "BaseTool",
@@ -28,6 +29,7 @@ __all__ = [
     "ExportToBibtexTool",
     "SearchObsidianTool",
     "ReadObsidianTool",
+    "FetchVideoTranscriptTool",
 ]
 
 # 自动注册工具
@@ -40,3 +42,4 @@ ToolRegistry.register("export_to_obsidian", ExportToObsidianTool)
 ToolRegistry.register("export_to_bibtex", ExportToBibtexTool)
 ToolRegistry.register("search_obsidian", SearchObsidianTool)
 ToolRegistry.register("read_obsidian", ReadObsidianTool)
+ToolRegistry.register("fetch_video_transcript", FetchVideoTranscriptTool)
