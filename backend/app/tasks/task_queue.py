@@ -103,8 +103,8 @@ class TaskQueue:
     DEFAULT_TASK_TIMEOUT = 600  # 默认 10 分钟超时
     TASK_TIMEOUTS = {
         "analysis": 600,       # 论文分析任务 10 分钟
-        "batch_analysis": 900, # 批量分析任务 15 分钟（5篇论文）
-        "video_analysis": 300, # 视频分析任务 5 分钟（转录稿通常较短）
+        "batch_analysis": 300, # 批量分析任务 5 分钟（5 篇论文并行，实际 <60s）
+        "video_analysis": 180, # 视频分析任务 3 分钟（转录稿较短）
         "summary": 300,        # 摘要任务 5 分钟
         "fetch": 300,          # 抓取任务 5 分钟
         "pdf_download": 180,   # PDF 下载任务 3 分钟
@@ -389,7 +389,6 @@ class TaskQueue:
 
         # 任务重试配置
         max_retries = 2
-        retry_delay = 30.0  # 秒
 
         for attempt in range(max_retries + 1):
             try:
@@ -425,6 +424,8 @@ class TaskQueue:
             except TimeoutError as e:
                 logger.error(f"任务 {task.id} 超时: {e}")
                 if attempt < max_retries:
+                    # 超时错误使用较短延迟
+                    retry_delay = 10.0
                     logger.info(f"任务 {task.id} 将在 {retry_delay} 秒后重试...")
                     await asyncio.sleep(retry_delay)
                 else:
@@ -438,14 +439,17 @@ class TaskQueue:
                 error_msg = str(e)
                 logger.error(f"任务 {task.id} 失败: {e}", exc_info=True)
 
-                # 检查是否为网络相关错误
+                # 根据错误类型选择重试延迟
+                is_rate_limit = "429" in error_msg or "rate limit" in error_msg.lower()
                 is_network_error = any(keyword in error_msg.lower() for keyword in [
                     'connection', 'network', 'timeout', 'refused', 'reset',
                     'broken pipe', 'api', 'http'
                 ])
 
-                if is_network_error and attempt < max_retries:
-                    logger.info(f"网络错误，任务 {task.id} 将在 {retry_delay} 秒后重试...")
+                if (is_rate_limit or is_network_error) and attempt < max_retries:
+                    # Rate Limit 用长延迟，网络错误用短延迟
+                    retry_delay = 60.0 if is_rate_limit else 10.0
+                    logger.info(f"{is_rate_limit and 'Rate Limit' or '网络错误'}，任务 {task.id} 将在 {retry_delay} 秒后重试...")
                     await asyncio.sleep(retry_delay)
                 else:
                     self.update_task(

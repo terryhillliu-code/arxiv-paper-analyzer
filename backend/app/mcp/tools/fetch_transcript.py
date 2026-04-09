@@ -7,6 +7,7 @@
 import re
 import logging
 import shutil
+import asyncio
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -218,30 +219,31 @@ class FetchVideoTranscriptTool(BaseTool):
 
     async def _fetch_youtube_transcript(self, url: str) -> Tuple[str, Dict[str, Any]]:
         """获取 YouTube 转录稿"""
-        import subprocess
         import json
 
         try:
-            # 使用 yt-dlp 获取字幕
-            result = subprocess.run(
-                [
-                    "yt-dlp",
-                    "--write-auto-sub",
-                    "--sub-lang", "zh-Hans,zh-Hant,zh-CN,zh-TW,en",
-                    "--skip-download",
-                    "--print", "json",
-                    url
-                ],
-                capture_output=True,
-                text=True,
-                timeout=120,
+            # 使用 yt-dlp 获取字幕（异步执行，不阻塞事件循环）
+            process = await asyncio.create_subprocess_exec(
+                "yt-dlp",
+                "--write-auto-sub",
+                "--sub-lang", "zh-Hans,zh-Hant,zh-CN,zh-TW,en",
+                "--skip-download",
+                "--print", "json",
+                url,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
 
-            if result.returncode != 0:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=120
+            )
+
+            if process.returncode != 0:
                 # 尝试只获取视频信息
                 return await self._fetch_video_info_only(url)
 
-            video_info = json.loads(result.stdout)
+            video_info = json.loads(stdout.decode())
 
             # 尝试获取字幕
             subtitle = self._extract_subtitle_from_info(video_info)
@@ -254,36 +256,37 @@ class FetchVideoTranscriptTool(BaseTool):
                 "description": video_info.get("description", "")[:500] if video_info.get("description") else "",
             }
 
-        except subprocess.TimeoutExpired:
+        except asyncio.TimeoutError:
             raise RuntimeError("获取 YouTube 视频超时")
         except json.JSONDecodeError as e:
             raise RuntimeError(f"解析 YouTube 响应失败: {e}")
 
     async def _fetch_bilibili_transcript(self, url: str) -> Tuple[str, Dict[str, Any]]:
         """获取 Bilibili 转录稿"""
-        import subprocess
         import json
 
         try:
-            result = subprocess.run(
-                [
-                    "yt-dlp",
-                    "--write-auto-sub",
-                    "--sub-lang", "zh-Hans,zh-Hant,zh-CN,zh-TW",
-                    "--skip-download",
-                    "--print", "json",
-                    url
-                ],
-                capture_output=True,
-                text=True,
-                timeout=120,
+            process = await asyncio.create_subprocess_exec(
+                "yt-dlp",
+                "--write-auto-sub",
+                "--sub-lang", "zh-Hans,zh-Hant,zh-CN,zh-TW",
+                "--skip-download",
+                "--print", "json",
+                url,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
 
-            if result.returncode != 0:
-                logger.warning(f"yt-dlp 获取 Bilibili 失败: {result.stderr[:200]}")
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=120
+            )
+
+            if process.returncode != 0:
+                logger.warning(f"yt-dlp 获取 Bilibili 失败: {stderr.decode()[:200]}")
                 return await self._fetch_video_info_only(url)
 
-            video_info = json.loads(result.stdout)
+            video_info = json.loads(stdout.decode())
             subtitle = self._extract_subtitle_from_info(video_info)
 
             # Bilibili 特有字段
@@ -298,34 +301,35 @@ class FetchVideoTranscriptTool(BaseTool):
                 "description": video_info.get("description", "")[:500] if video_info.get("description") else "",
             }
 
-        except subprocess.TimeoutExpired:
+        except asyncio.TimeoutError:
             raise RuntimeError("获取 Bilibili 视频超时")
         except json.JSONDecodeError as e:
             raise RuntimeError(f"解析 Bilibili 响应失败: {e}")
 
     async def _fetch_douyin_transcript(self, url: str) -> Tuple[str, Dict[str, Any]]:
         """获取抖音转录稿"""
-        import subprocess
         import json
 
         try:
-            result = subprocess.run(
-                [
-                    "yt-dlp",
-                    "--skip-download",
-                    "--print", "json",
-                    url
-                ],
-                capture_output=True,
-                text=True,
-                timeout=60,
+            process = await asyncio.create_subprocess_exec(
+                "yt-dlp",
+                "--skip-download",
+                "--print", "json",
+                url,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
 
-            if result.returncode != 0:
-                logger.warning(f"yt-dlp 获取抖音失败: {result.stderr[:200]}")
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=60
+            )
+
+            if process.returncode != 0:
+                logger.warning(f"yt-dlp 获取抖音失败: {stderr.decode()[:200]}")
                 raise RuntimeError("无法获取抖音视频信息")
 
-            video_info = json.loads(result.stdout)
+            video_info = json.loads(stdout.decode())
 
             # 抖音视频通常没有字幕，使用描述
             title = video_info.get("title", "") or video_info.get("fulltitle", "")
@@ -340,27 +344,30 @@ class FetchVideoTranscriptTool(BaseTool):
                 "description": description,
             }
 
-        except subprocess.TimeoutExpired:
+        except asyncio.TimeoutError:
             raise RuntimeError("获取抖音视频超时")
         except json.JSONDecodeError as e:
             raise RuntimeError(f"解析抖音响应失败: {e}")
 
     async def _fetch_video_info_only(self, url: str) -> Tuple[str, Dict[str, Any]]:
         """仅获取视频信息（无字幕时回退）"""
-        import subprocess
         import json
 
-        result = subprocess.run(
-            ["yt-dlp", "--skip-download", "--print", "json", url],
-            capture_output=True,
-            text=True,
-            timeout=60,
+        process = await asyncio.create_subprocess_exec(
+            "yt-dlp", "--skip-download", "--print", "json", url,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
 
-        if result.returncode != 0:
-            raise RuntimeError(f"获取视频信息失败: {result.stderr[:100]}")
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(),
+            timeout=60
+        )
 
-        video_info = json.loads(result.stdout)
+        if process.returncode != 0:
+            raise RuntimeError(f"获取视频信息失败: {stderr.decode()[:100]}")
+
+        video_info = json.loads(stdout.decode())
         title = video_info.get("title", "")
         description = video_info.get("description", "") or title
 
