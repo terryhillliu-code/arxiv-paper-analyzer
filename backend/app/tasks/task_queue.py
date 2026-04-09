@@ -314,15 +314,15 @@ class TaskQueue:
                 (task_type, limit),
             )
         else:
-            # 获取所有类型，优先处理 force_refresh 和 batch_analysis 任务
+            # 获取所有类型，优先处理 batch_analysis 任务（效率最高）
             cursor = conn.execute(
                 """
                 SELECT * FROM tasks
                 WHERE status = 'pending'
                 ORDER BY
                     CASE
-                        WHEN task_type = 'force_refresh' THEN 0
-                        WHEN task_type = 'batch_analysis' THEN 1
+                        WHEN task_type = 'batch_analysis' THEN 0
+                        WHEN task_type = 'force_refresh' THEN 1
                         ELSE 2
                     END,
                     created_at ASC
