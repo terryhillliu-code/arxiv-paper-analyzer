@@ -7,38 +7,47 @@
 论文 Tier：根据内容质量评定，任何分类的论文都可能是 A/B/C
 """
 
-from typing import List
+from enum import Enum
+from typing import Dict, List
+
+# ==================== 优先级枚举 ====================
+
+class Priority(str, Enum):
+    """分类关注级别枚举。"""
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+    NONE = "none"
+
 
 # ==================== 分类关注级别 ====================
 
 # 高关注分类（每日抓取，优先分析资源）
-# 这些是核心技术领域，需要最高关注度
 HIGH_PRIORITY_CATEGORIES: List[str] = [
-    "cs.AI",   # 人工智能
-    "cs.CL",   # 计算语言学 / 自然语言处理
-    "cs.LG",   # 机器学习
-    "cs.CV",   # 计算机视觉
-    "cs.NE",   # 神经与进化计算
+    "cs.AI", "cs.CL", "cs.LG", "cs.CV", "cs.NE",
 ]
 
 # 一般关注分类（每日抓取，标准资源）
-# 这些是重要的技术领域，与 AI 有紧密交叉
 MEDIUM_PRIORITY_CATEGORIES: List[str] = [
-    "cs.RO",   # 机器人
-    "cs.DC",   # 分布式、并行和集群计算
-    "cs.CR",   # 密码学与安全
-    "cs.IR",   # 信息检索
-    "cs.SE",   # 软件工程
+    "cs.RO", "cs.DC", "cs.CR", "cs.IR", "cs.SE",
 ]
 
 # 低关注分类（每周抓取，基础资源）
-# 这些是相关领域，保持关注但降低频率
 LOW_PRIORITY_CATEGORIES: List[str] = [
-    "cs.HC",   # 人机交互
-    "stat.ML", # 统计机器学习（统计学分类）
-    "eess.AS", # 音频和语音信号处理
-    "eess.IV", # 图像和视频处理
+    "cs.HC", "stat.ML", "eess.AS", "eess.IV",
 ]
+
+# ==================== 预计算的查找表 ====================
+
+# 缓存的全部分类列表
+_ALL_CATEGORIES: List[str] = HIGH_PRIORITY_CATEGORIES + MEDIUM_PRIORITY_CATEGORIES + LOW_PRIORITY_CATEGORIES
+
+# O(1) 优先级查找表
+_PRIORITY_MAP: Dict[str, str] = {
+    **{c: Priority.HIGH.value for c in HIGH_PRIORITY_CATEGORIES},
+    **{c: Priority.MEDIUM.value for c in MEDIUM_PRIORITY_CATEGORIES},
+    **{c: Priority.LOW.value for c in LOW_PRIORITY_CATEGORIES},
+}
 
 # ==================== 分类元数据 ====================
 
@@ -69,41 +78,25 @@ CATEGORY_METADATA = {
 
 def get_all_categories() -> List[str]:
     """获取所有关注的分类列表。"""
-    return HIGH_PRIORITY_CATEGORIES + MEDIUM_PRIORITY_CATEGORIES + LOW_PRIORITY_CATEGORIES
+    return _ALL_CATEGORIES
 
 
 def get_category_priority(category: str) -> str:
     """获取分类的关注级别。
 
     Returns:
-        "high": 高关注（每日抓取）
-        "medium": 一般关注（每日抓取）
-        "low": 低关注（每周抓取）
-        "none": 未关注
+        Priority.HIGH/medium/low/none
     """
-    if category in HIGH_PRIORITY_CATEGORIES:
-        return "high"
-    elif category in MEDIUM_PRIORITY_CATEGORIES:
-        return "medium"
-    elif category in LOW_PRIORITY_CATEGORIES:
-        return "low"
-    return "none"
+    return _PRIORITY_MAP.get(category, Priority.NONE.value)
 
 
 def get_priority_categories(priority: str) -> List[str]:
-    """获取指定关注级别的所有分类。
-
-    Args:
-        priority: "high", "medium", "low"
-
-    Returns:
-        该级别的分类列表
-    """
-    if priority == "high":
+    """获取指定关注级别的所有分类。"""
+    if priority == Priority.HIGH.value:
         return HIGH_PRIORITY_CATEGORIES
-    elif priority == "medium":
+    elif priority == Priority.MEDIUM.value:
         return MEDIUM_PRIORITY_CATEGORIES
-    elif priority == "low":
+    elif priority == Priority.LOW.value:
         return LOW_PRIORITY_CATEGORIES
     return []
 

@@ -13,11 +13,18 @@ import arxiv
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config.categories import (
+    get_all_categories,
+    HIGH_PRIORITY_CATEGORIES,
+    MEDIUM_PRIORITY_CATEGORIES,
+)
 from app.models import FetchLog, Paper
 from app.services.paper_scorer import PaperScorer
 
 logger = logging.getLogger(__name__)
 
+
+from app.config.categories import get_all_categories
 
 class ArxivService:
     """ArXiv 论文抓取服务。
@@ -26,26 +33,7 @@ class ArxivService:
     """
 
     # 支持的 ArXiv 分类（使用配置模块）
-    # 保持向后兼容，同时支持新的分层优先级系统
-    SUPPORTED_CATEGORIES: List[str] = [
-        # Tier 1 - 核心
-        "cs.AI",  # 人工智能
-        "cs.CL",  # 计算语言学
-        "cs.LG",  # 机器学习
-        "cs.CV",  # 计算机视觉
-        "cs.NE",  # 神经与进化计算
-        # Tier 2 - 重要扩展
-        "cs.RO",  # 机器人
-        "cs.DC",  # 分布式计算
-        "cs.CR",  # 密码学与安全
-        "cs.IR",  # 信息检索
-        "cs.SE",  # 软件工程
-        # Tier 3 - 关注
-        "cs.HC",  # 人机交互
-        "stat.ML",  # 机器学习（统计）
-        "eess.AS",  # 音频信号处理
-        "eess.IV",  # 图像视频处理
-    ]
+    SUPPORTED_CATEGORIES: List[str] = get_all_categories()
 
     @staticmethod
     async def fetch_papers(
@@ -397,7 +385,7 @@ class ArxivService:
         """
         # 默认分类（使用核心分类）
         if not categories:
-            categories = ["cs.AI", "cs.CL", "cs.LG", "cs.CV", "cs.NE"]
+            categories = HIGH_PRIORITY_CATEGORIES
 
         # 处理时区：ArXiv 返回 UTC 时区，确保输入日期也有时区
         if date_from and date_from.tzinfo is None:
@@ -591,7 +579,7 @@ class ArxivService:
             汇总的抓取结果
         """
         if not categories:
-            categories = ["cs.AI", "cs.CL", "cs.LG", "cs.CV", "cs.NE", "cs.RO", "cs.DC"]
+            categories = HIGH_PRIORITY_CATEGORIES + MEDIUM_PRIORITY_CATEGORIES
 
         total_stats = {
             "total_fetched": 0,
