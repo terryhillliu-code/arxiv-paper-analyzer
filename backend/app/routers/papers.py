@@ -3,7 +3,10 @@
 提供论文查询、抓取、分析等 API 端点。
 """
 
+import asyncio
+import json
 import logging
+import subprocess
 from datetime import datetime, timedelta
 from typing import List, Optional
 
@@ -39,6 +42,7 @@ from app.schemas import (
 from app.services.ai_service import ai_service
 from app.services.arxiv_service import ArxivService
 from app.services.pdf_service import PDFService, pdf_service
+from app.services.smart_search_service import SmartSearchService
 
 router = APIRouter(prefix="/api", tags=["papers"])
 
@@ -155,6 +159,109 @@ async def get_papers(
     papers = result.scalars().all()
 
     # 计算总页数
+    total_pages = (total + page_size - 1) // page_size
+
+    return PaperListResponse(
+        papers=[PaperCard.model_validate(p) for p in papers],
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+    )
+
+
+# ==================== 智能搜索 ====================
+
+
+@router.get("/papers/smart-search", response_model=PaperListResponse)
+async def smart_search_papers(
+    query: str = Query(..., description="搜索关键词"),
+    categories: Optional[str] = Query(None, description="分类，逗号分隔"),
+    tier: Optional[str] = Query(None, description="Tier等级: A, B, C"),
+    use_semantic: bool = Query(True, description="启用语义搜索"),
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    db: AsyncSession = Depends(get_db),
+) -> PaperListResponse:
+    """智能搜索：支持语义检索。
+
+    结合 SQL 模糊搜索和 RAG 向量检索：
+    - SQL 模式：传统的 ILIKE 模式匹配（精确度高）
+    - 语义模式：向量检索补充语义相关结果（覆盖面广）
+
+    Args:
+        query: 搜索关键词
+        categories: 分类筛选（逗号分隔）
+        tier: Tier 筛选
+        use_semantic: 是否启用语义搜索（默认 True）
+        page: 页码
+        page_size: 每页数量
+
+    Returns:
+        论文列表响应
+    """
+    service = SmartSearchService()
+
+    # 解析分类列表
+    category_list = None
+    if categories:
+        category_list = [c.strip() for c in categories.split(",")]
+
+    # 搜索论文 ID
+    if use_semantic:
+        # 使用 bridge.py 子进程进行语义搜索
+        rag_data = []
+        try:
+            settings = get_settings()
+            proc = await asyncio.create_subprocess_exec(
+                settings.rag_python_path,
+                settings.rag_bridge_path,
+                "retrieve",
+                query,
+                "--top-k",
+                "30",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60.0)
+
+            if proc.returncode == 0:
+                rag_data = json.loads(stdout)
+                logger.info(f"RAG 搜索返回 {len(rag_data)} 条结果")
+            else:
+                logger.warning(f"RAG 搜索失败: {stderr.decode()}")
+        except asyncio.TimeoutError:
+            logger.warning("RAG 搜索超时，降级为纯 SQL 搜索")
+        except json.JSONDecodeError as e:
+            logger.warning(f"RAG 结果解析失败: {e}")
+        except Exception as e:
+            logger.warning(f"RAG 搜索异常: {e}")
+
+        paper_ids = await service.hybrid_search(
+            db, query, rag_data, category_list, tier, top_k=page_size * 3
+        )
+    else:
+        paper_ids = await service.sql_search(
+            db, query, category_list, tier, limit=page_size * 3
+        )
+
+    # 分页处理
+    total = len(paper_ids)
+    offset = (page - 1) * page_size
+    page_ids = paper_ids[offset : offset + page_size]
+
+    # 查询论文详情
+    if page_ids:
+        detail_query = select(Paper).where(Paper.id.in_(page_ids))
+        result = await db.execute(detail_query)
+        papers = result.scalars().all()
+
+        # 按 ID 列表顺序排序
+        id_order = {id_: i for i, id_ in enumerate(page_ids)}
+        papers = sorted(papers, key=lambda p: id_order.get(p.id, 999))
+    else:
+        papers = []
+
     total_pages = (total + page_size - 1) // page_size
 
     return PaperListResponse(
