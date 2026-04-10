@@ -36,7 +36,11 @@ from app.database import async_session_maker
 from app.services.ai_service import ai_service
 from app.services.arxiv_service import ArxivService
 from app.services.s2_service import get_s2_service
-from app.config.categories import CORE_CATEGORIES, IMPORTANT_CATEGORIES, get_all_categories
+from app.config.categories import (
+    HIGH_PRIORITY_CATEGORIES,
+    MEDIUM_PRIORITY_CATEGORIES,
+    get_all_categories
+)
 from sqlalchemy import select, or_
 from app.models import Paper
 
@@ -70,7 +74,7 @@ class ScheduledFetcher:
         """
         self.max_retries = max_retries
         self.retry_delay = retry_delay
-        self.categories = categories or (CORE_CATEGORIES + IMPORTANT_CATEGORIES)
+        self.categories = categories or (HIGH_PRIORITY_CATEGORIES + MEDIUM_PRIORITY_CATEGORIES)
         self.max_results = max_results
         self.max_concurrent_ai = max_concurrent_ai
         # 并发控制信号量
@@ -395,8 +399,8 @@ def main():
     parser.add_argument(
         "--categories",
         type=str,
-        default=",".join(CORE_CATEGORIES + IMPORTANT_CATEGORIES),
-        help="要抓取的分类 (逗号分隔)，默认为核心+重要分类",
+        default=",".join(HIGH_PRIORITY_CATEGORIES + MEDIUM_PRIORITY_CATEGORIES),
+        help="要抓取的分类 (逗号分隔)，默认为高关注+一般关注分类",
     )
 
     args = parser.parse_args()

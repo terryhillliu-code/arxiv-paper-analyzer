@@ -13,22 +13,22 @@ import {
 // 默认分页大小
 const PAGE_SIZE = 20
 
-// 学科分类选项（按优先级分组）
+// 学科分类选项（按关注程度分组）
 const CATEGORY_OPTIONS = [
   { value: null, label: 'All' },
-  // Tier 1 - 核心
+  // 高关注
   { value: 'cs.AI', label: 'cs.AI' },
   { value: 'cs.CL', label: 'cs.CL' },
   { value: 'cs.LG', label: 'cs.LG' },
   { value: 'cs.CV', label: 'cs.CV' },
   { value: 'cs.NE', label: 'cs.NE' },
-  // Tier 2 - 重要扩展
+  // 一般关注
   { value: 'cs.RO', label: 'cs.RO' },
   { value: 'cs.DC', label: 'cs.DC' },
   { value: 'cs.CR', label: 'cs.CR' },
   { value: 'cs.IR', label: 'cs.IR' },
   { value: 'cs.SE', label: 'cs.SE' },
-  // Tier 3 - 关注
+  // 低关注
   { value: 'cs.HC', label: 'cs.HC' },
   { value: 'stat.ML', label: 'stat.ML' },
 ]

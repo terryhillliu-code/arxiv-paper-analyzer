@@ -1,26 +1,25 @@
 import { Link } from 'react-router-dom'
 import { format } from 'date-fns'
 
-// 学科分类颜色映射
+// 学科分类颜色映射（按技术领域）
 const CATEGORY_COLORS = {
-  // Tier 1 - 核心
+  // AI 核心领域
   'cs.AI': 'bg-purple-100 text-purple-700',
   'cs.CL': 'bg-blue-100 text-blue-700',
   'cs.LG': 'bg-green-100 text-green-700',
   'cs.CV': 'bg-orange-100 text-orange-700',
   'cs.NE': 'bg-red-100 text-red-700',
-  // Tier 2 - 重要扩展
+  // 相关技术领域
   'cs.RO': 'bg-yellow-100 text-yellow-700',
   'cs.DC': 'bg-teal-100 text-teal-700',
   'cs.CR': 'bg-pink-100 text-pink-700',
   'cs.IR': 'bg-sky-100 text-sky-700',
   'cs.SE': 'bg-cyan-100 text-cyan-700',
-  // Tier 3 - 关注
+  // 其他领域
   'cs.HC': 'bg-indigo-100 text-indigo-700',
   'stat.ML': 'bg-emerald-100 text-emerald-700',
   'eess.AS': 'bg-violet-100 text-violet-700',
   'eess.IV': 'bg-amber-100 text-amber-700',
-  // 其他
   'cs.DB': 'bg-slate-100 text-slate-700',
   'cs.AR': 'bg-rose-100 text-rose-700',
   'cs.NI': 'bg-lime-100 text-lime-700',
