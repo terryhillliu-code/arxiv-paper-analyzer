@@ -26,6 +26,7 @@ from app.prompts.templates import (
     QUICK_MODE_JSON_PROMPT,
     DEEP_ANALYSIS_PROMPT,
     QUICK_MODE_ANALYSIS_PROMPT,
+    QUICK_MODE_UNIFIED_PROMPT,
     PREDEFINED_TAGS,
     SUMMARY_PROMPT,
     TIER_REEVALUATION_PROMPT,
@@ -61,6 +62,26 @@ class AIService:
 
     # 推理模型（返回 reasoning_content）
     REASONING_MODELS = ["glm-5.1", "glm-5-turbo", "glm-5"]
+
+    # 分析结果默认值
+    DEFAULT_ANALYSIS_VALUES = {
+        "one_line_summary": "",
+        "outline": [],
+        "key_contributions": [],
+        "strengths": [],
+        "weaknesses": [],
+        "methodology": "",
+        "datasets": [],
+        "metrics": [],
+        "future_directions": [],
+        "overall_rating": "B",
+        "recommendation": "",
+        "related_work": {"key_references": [], "similar_papers": []},
+        "action_items": [],
+        "knowledge_links": [],
+        "tier": "B",
+        "tags": [],
+    }
 
     def __init__(self):
         """初始化 AI 客户端。"""
@@ -312,15 +333,17 @@ class AIService:
                 content = content[:max_content_length]
                 logger.warning(f"内容已截断至 {max_content_length} 字符")
 
-            # 格式化提示词（快速模式使用专门的 prompt）
+            # 格式化提示词（快速模式使用合并 PROMPT，单次 API 调用）
             if quick_mode:
-                prompt = QUICK_MODE_ANALYSIS_PROMPT.format(
+                # 快速模式：使用合并 Prompt，直接输出 JSON
+                prompt = QUICK_MODE_UNIFIED_PROMPT.format(
                     title=title,
                     authors=", ".join(authors) if authors else "未知",
                     institutions=", ".join(institutions) if institutions else "未知",
                     publish_date=publish_date or "未知",
                     categories=", ".join(categories) if categories else "未分类",
-                    arxiv_url=arxiv_url or "",
+                    citation_count=citation_count if citation_count else "未知（新论文）",
+                    is_new_paper="是（忽略引用数维度）" if is_new_paper else "否",
                     content=content,
                 )
             else:
@@ -337,119 +360,82 @@ class AIService:
 
             # 调用 AI API (在线程池中运行，避免阻塞事件循环)
             logger.info(f"开始生成深度分析: {title[:30]}...")
-            # 快速模式使用更少的 token
-            max_tokens = 4000 if quick_mode else self.max_tokens
-            report = await asyncio.to_thread(self._call_api, prompt, max_tokens=max_tokens)
+            max_tokens = 8192 if quick_mode else self.max_tokens
+            response_text = await asyncio.to_thread(self._call_api, prompt, max_tokens=max_tokens)
 
-            # 移除 AI 自动生成的论文大纲章节（大纲信息从 analysis_json.outline 获取）
-            report = self._strip_outline_section(report)
-
-            logger.info(f"深度分析报告生成成功: {len(report)} 字符")
-
-            # 快速模式：用推理模型异步提取 JSON（带重试）
             if quick_mode:
-                from openai import OpenAI as OpenAIClient
-                settings = get_settings()
+                # 快速模式：直接解析 JSON（已合并为单次调用）
+                analysis_json = self._parse_json(response_text)
 
-                try:
-                    # 使用 Coding Plan API (qwen3.5-plus)，统一限流管理
-                    quick_model = "qwen3.5-plus"
-                    quick_client = OpenAIClient(
-                        api_key=settings.coding_plan_api_key,
-                        base_url="https://coding.dashscope.aliyuncs.com/v1",
-                        timeout=120,  # Coding Plan 响应更快
-                    )
-                    prompt_json = QUICK_MODE_JSON_PROMPT.format(
-                        report=report,
-                        citation_count=citation_count if citation_count else "未知（新论文）",
-                        institutions=", ".join(institutions) if institutions else "未知",
-                        publish_date=publish_date or "未知",
-                        is_new_paper="是（忽略引用数维度）" if is_new_paper else "否",
-                    )
-
-                    # 重试机制：最多 3 次
-                    MAX_RETRIES = 3
-                    analysis_json = {}
-                    for attempt in range(MAX_RETRIES):
-                        def _sync_json_call():
-                            return quick_client.chat.completions.create(
-                                model=quick_model,
-                                messages=[{"role": "user", "content": prompt_json}],
-                                max_tokens=8192,  # 增加以避免截断
-                            )
-
-                        response = await asyncio.to_thread(_sync_json_call)
-                        response_text = response.choices[0].message.content or ""
-                        analysis_json = self._parse_json(response_text)
-
-                        # 验证关键字段（快速模式检查长度）
-                        is_valid, missing = self.validate_analysis_json(analysis_json, check_length=True)
-                        if is_valid:
-                            break
-                        logger.warning(f"JSON 验证失败 (尝试 {attempt+1}/{MAX_RETRIES})，缺失: {missing}")
-
-                        # 如果是长度问题，尝试扩展总结（最后一次尝试时）
-                        if attempt == MAX_RETRIES - 1 and "one_line_summary太短" in str(missing):
-                            logger.warning("总结太短，尝试扩展...")
-                            expand_prompt = f"""请将以下论文总结扩展到80-150字（中文字符），必须包含：研究问题、方法思路、具体结论。
+                # 验证关键字段（快速模式检查长度）
+                is_valid, missing = self.validate_analysis_json(analysis_json, check_length=True)
+                if not is_valid:
+                    logger.warning(f"JSON 验证失败，缺失: {missing}")
+                    # 如果是长度问题，尝试扩展总结
+                    if "one_line_summary太短" in str(missing) or "one_line_summary过短" in str(missing):
+                        logger.warning("总结太短，尝试扩展...")
+                        expand_prompt = f"""请将以下论文总结扩展到80-150字（中文字符），必须包含：研究问题、方法思路、具体结论。
 
 原始总结：{analysis_json.get('one_line_summary', '')}
 
 要求：展开描述每个要素，用完整句子，不要过于精简。直接输出扩展后的总结文本，不要输出JSON。"""
-                            try:
-                                expand_response = quick_client.chat.completions.create(
-                                    model=quick_model,
-                                    messages=[{"role": "user", "content": expand_prompt}],
-                                    max_tokens=300,
-                                )
-                                expanded = expand_response.choices[0].message.content or ""
-                                if len(expanded) >= 80:
-                                    analysis_json["one_line_summary"] = expanded.strip()
-                                    logger.info(f"总结扩展成功: {len(expanded)}字")
-                            except Exception as e:
-                                logger.warning(f"总结扩展失败: {e}")
+                        try:
+                            from openai import OpenAI as OpenAIClient
+                            settings = get_settings()
+                            quick_client = OpenAIClient(
+                                api_key=settings.coding_plan_api_key,
+                                base_url="https://coding.dashscope.aliyuncs.com/v1",
+                                timeout=60,
+                            )
+                            expand_response = quick_client.chat.completions.create(
+                                model="qwen3.5-plus",
+                                messages=[{"role": "user", "content": expand_prompt}],
+                                max_tokens=300,
+                            )
+                            expanded = expand_response.choices[0].message.content or ""
+                            if len(expanded) >= 80:
+                                analysis_json["one_line_summary"] = expanded.strip()
+                                logger.info(f"总结扩展成功: {len(expanded)}字")
+                        except Exception as e:
+                            logger.warning(f"总结扩展失败: {e}")
 
-                    # 补充默认值
-                    DEFAULT_VALUES = {
-                        "one_line_summary": "", "outline": [], "key_contributions": [],
-                        "strengths": [], "weaknesses": [], "methodology": "",
-                        "datasets": [], "metrics": [], "future_directions": [],
-                        "overall_rating": "B", "recommendation": "",
-                        "related_work": {"key_references": [], "similar_papers": []},
-                        "action_items": [], "knowledge_links": [], "tier": "B", "tags": [],
-                    }
-                    for key, default in DEFAULT_VALUES.items():
-                        if key not in analysis_json:
-                            analysis_json[key] = default
+                # 补充默认值
+                for key, default in self.DEFAULT_ANALYSIS_VALUES.items():
+                    if key not in analysis_json:
+                        analysis_json[key] = default
 
-                    # ========== 防护层：分析后验证 ==========
-                    post_check = analysis_guardrail.post_analysis_validate(
-                        analysis_json=analysis_json,
-                        quick_mode=quick_mode,
-                        content_used=content,
-                    )
-                    if not post_check.valid:
-                        logger.warning(f"分析后验证警告: {post_check.warnings}")
-                        for warning in post_check.warnings:
-                            logger.warning(warning)
+                # ========== 防护层：分析后验证 ==========
+                post_check = analysis_guardrail.post_analysis_validate(
+                    analysis_json=analysis_json,
+                    quick_mode=quick_mode,
+                    content_used=content,
+                )
+                if not post_check.valid:
+                    logger.warning(f"分析后验证警告: {post_check.warnings}")
+                    for warning in post_check.warnings:
+                        logger.warning(warning)
 
-                    # ========== 防护层：捏造检测 ==========
-                    fabric_check = analysis_guardrail.detect_fabrication(
-                        analysis_json=analysis_json,
-                        quick_mode=quick_mode,
-                    )
-                    if not fabric_check.valid:
-                        logger.error(f"⚠️ 检测到疑似捏造: {fabric_check.warnings}")
-                        # 如果检测到捏造，降级处理
-                        if fabric_check.warnings:
-                            logger.warning("降级处理：简化 outline，移除公式符号")
-                            analysis_json["outline"] = []  # 清空可疑 outline
+                # ========== 防护层：捏造检测 ==========
+                fabric_check = analysis_guardrail.detect_fabrication(
+                    analysis_json=analysis_json,
+                    quick_mode=quick_mode,
+                )
+                if not fabric_check.valid:
+                    logger.error(f"⚠️ 检测到疑似捏造: {fabric_check.warnings}")
+                    if fabric_check.warnings:
+                        logger.warning("降级处理：简化 outline，移除公式符号")
+                        analysis_json["outline"] = []
 
-                    logger.info(f"快速模式: JSON提取完成 tier={analysis_json.get('tier', 'B')}")
-                except Exception as e:
-                    logger.warning(f"JSON提取失败: {e}")
-                    analysis_json = {"tier": "B", "tags": [], "one_line_summary": "", "outline": []}
+                # 从 JSON 生成简要报告（用于展示）
+                report = self._generate_report_from_json(analysis_json, title)
+                logger.info(f"快速模式: 分析完成 tier={analysis_json.get('tier', 'B')}")
             else:
+                # 非快速模式：原有流程（报告 → JSON 提取）
+                report = response_text
+                # 移除 AI 自动生成的论文大纲章节
+                report = self._strip_outline_section(report)
+                logger.info(f"深度分析报告生成成功: {len(report)} 字符")
+
                 # 提取结构化数据
                 analysis_json = await self._extract_analysis_json(
                     report,
@@ -563,26 +549,6 @@ class AIService:
         Returns:
             结构化的分析数据字典，确保关键字段存在
         """
-        # 定义默认值
-        DEFAULT_VALUES = {
-            "one_line_summary": "",
-            "outline": [],
-            "key_contributions": [],
-            "strengths": [],
-            "weaknesses": [],
-            "methodology": "",
-            "datasets": [],
-            "metrics": [],
-            "future_directions": [],
-            "overall_rating": "B",
-            "recommendation": "",
-            "related_work": {"key_references": [], "similar_papers": []},
-            "action_items": [],
-            "knowledge_links": [],
-            "tier": "B",
-            "tags": [],
-        }
-
         try:
             # 格式化提示词
             prompt = ANALYSIS_JSON_PROMPT.format(
@@ -598,7 +564,7 @@ class AIService:
             result = self._parse_json(response_text)
 
             # 合并默认值，确保所有字段存在
-            for key, default_value in DEFAULT_VALUES.items():
+            for key, default_value in self.DEFAULT_ANALYSIS_VALUES.items():
                 if key not in result or result[key] is None:
                     result[key] = default_value
                     logger.warning(f"字段 '{key}' 缺失，使用默认值")
@@ -639,7 +605,50 @@ class AIService:
 
         except Exception as e:
             logger.error(f"提取结构化数据失败: {e}", exc_info=True)
-            return DEFAULT_VALUES.copy()
+            return self.DEFAULT_ANALYSIS_VALUES.copy()
+
+    def _generate_report_from_json(self, analysis_json: Dict[str, Any], title: str) -> str:
+        """从 JSON 生成简要报告（用于快速模式展示）。
+
+        Args:
+            analysis_json: 结构化分析结果
+            title: 论文标题
+
+        Returns:
+            简要 Markdown 报告
+        """
+        one_line_summary = analysis_json.get("one_line_summary", "")
+        key_contributions = analysis_json.get("key_contributions", [])
+        strengths = analysis_json.get("strengths", [])
+        weaknesses = analysis_json.get("weaknesses", [])
+        tier = analysis_json.get("tier", "B")
+        tags = analysis_json.get("tags", [])
+
+        report = f"""## {title}
+
+### 💡 一句话总结
+{one_line_summary}
+
+### ⭐ 综合评估
+- **Tier**: {tier}
+- **标签**: {', '.join(tags) if tags else '无'}
+
+### 主要贡献
+"""
+        for i, contrib in enumerate(key_contributions[:3], 1):
+            report += f"{i}. {contrib}\n"
+
+        if strengths:
+            report += "\n### 优势\n"
+            for s in strengths:
+                report += f"- {s}\n"
+
+        if weaknesses:
+            report += "\n### 不足\n"
+            for w in weaknesses:
+                report += f"- {w}\n"
+
+        return report
 
     def _generate_markdown_output(
         self,
