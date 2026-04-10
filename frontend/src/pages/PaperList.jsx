@@ -13,30 +13,46 @@ import {
 // 默认分页大小
 const PAGE_SIZE = 20
 
-// 学科分类选项
+// 学科分类选项（按优先级分组）
 const CATEGORY_OPTIONS = [
   { value: null, label: 'All' },
+  // Tier 1 - 核心
   { value: 'cs.AI', label: 'cs.AI' },
   { value: 'cs.CL', label: 'cs.CL' },
   { value: 'cs.LG', label: 'cs.LG' },
   { value: 'cs.CV', label: 'cs.CV' },
-  { value: 'cs.DC', label: 'cs.DC' },
   { value: 'cs.NE', label: 'cs.NE' },
+  // Tier 2 - 重要扩展
+  { value: 'cs.RO', label: 'cs.RO' },
+  { value: 'cs.DC', label: 'cs.DC' },
+  { value: 'cs.CR', label: 'cs.CR' },
   { value: 'cs.IR', label: 'cs.IR' },
+  { value: 'cs.SE', label: 'cs.SE' },
+  // Tier 3 - 关注
+  { value: 'cs.HC', label: 'cs.HC' },
+  { value: 'stat.ML', label: 'stat.ML' },
 ]
 
 // 智能分类/主题标签选项
 const TAG_OPTIONS = [
   { value: null, label: '全部' },
-  { value: 'GPU硬件架构', label: 'GPU硬件架构及性能优化' },
-  { value: 'AI集群', label: 'AI集群和数据中心' },
-  { value: '大模型基础架构', label: '大模型基础架构' },
-  { value: '训练推理框架', label: '训练推理框架' },
-  { value: '代码生成', label: '代码生成' },
-  { value: '图像视频生成', label: '图像&视频生成' },
-  { value: '多模态', label: '多模态' },
-  { value: '计算机存储', label: '计算机存储' },
-  { value: '故障诊断', label: '故障诊断' },
+  // AI 系统
+  { value: '大模型架构', label: '大模型架构' },
+  { value: '多模态智能体', label: '多模态智能体' },
+  { value: '计算机视觉', label: '计算机视觉' },
+  { value: 'NLP与语言处理', label: 'NLP与语言处理' },
+  { value: '深度学习', label: '深度学习' },
+  { value: '强化学习', label: '强化学习' },
+  // AI 硬件 & 基础设施
+  { value: 'GPU硬件架构', label: 'GPU硬件架构' },
+  { value: 'AI集群', label: 'AI集群' },
+  { value: '分布式训练', label: '分布式训练' },
+  // 应用领域
+  { value: '机器人', label: '机器人' },
+  { value: '具身智能', label: '具身智能' },
+  { value: '安全与隐私', label: '安全与隐私' },
+  { value: '软件工程', label: '软件工程' },
+  { value: '人机交互', label: '人机交互' },
 ]
 
 // Tier 等级选项
