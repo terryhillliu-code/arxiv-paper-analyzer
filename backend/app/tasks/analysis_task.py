@@ -320,6 +320,9 @@ class AnalysisTaskHandler:
 
         logger.info(f"✅ 分析结果验证通过")
 
+        # 获取图片目录（如果有）
+        images_dir = content_metadata.get("images_dir") if content_metadata else None
+
         try:
             generator = MarkdownGenerator()
             export_result = generator._local_generate_paper_md(
@@ -342,6 +345,7 @@ class AnalysisTaskHandler:
                 analysis_json=analysis_json or {},
                 report=analysis_report or "",
                 pdf_path=paper_pdf_local_path,
+                images_dir=images_dir,
             )
             md_output_path = export_result.get("md_path")
             logger.info(f"导出到 Obsidian 成功: {md_output_path}")

@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import logging
 
+from app.adapters.obsidian_adapter import ObsidianAdapter
+
 logger = logging.getLogger(__name__)
 
 # 尝试导入 Obsidian 客户端
@@ -78,6 +80,7 @@ class MarkdownGenerator:
         analysis_json: Dict[str, Any],
         report: str,
         pdf_path: str = None,
+        images_dir: str = None,
     ) -> Dict[str, str]:
         """生成论文 Markdown 文件并复制 PDF。
 
@@ -88,9 +91,10 @@ class MarkdownGenerator:
             analysis_json: 分析结果 JSON
             report: 分析报告
             pdf_path: PDF 源文件路径（可选）
+            images_dir: 图片源目录（MinerU 提取的图片目录）
 
         Returns:
-            包含 md_path 和 pdf_path 的字典
+            包含 md_path、pdf_path、images_copied 的字典
         """
         # 尝试使用 zhiwei-obsidian 服务
         if self.prefer_service and obsidian_client.is_available():
@@ -105,7 +109,7 @@ class MarkdownGenerator:
                 logger.warning(f"服务导出失败: {result.get('error')}，回退到本地实现")
 
         # 本地实现
-        return self._local_generate_paper_md(paper_data, analysis_json, report, pdf_path)
+        return self._local_generate_paper_md(paper_data, analysis_json, report, pdf_path, images_dir)
 
     def _local_generate_paper_md(
         self,
@@ -113,6 +117,7 @@ class MarkdownGenerator:
         analysis_json: Dict[str, Any],
         report: str,
         pdf_path: str = None,
+        images_dir: str = None,
     ) -> Dict[str, str]:
         """本地实现：生成论文 Markdown 文件并复制 PDF。"""
         # 提取字段
@@ -133,13 +138,24 @@ class MarkdownGenerator:
         md_filename = f"{type_prefix}_{date_str}_{safe_title}.md"
         md_filepath = output_dir / md_filename
 
+        # 处理图片（使用 ObsidianAdapter）
+        images_copied = 0
+        if images_dir and Path(images_dir).exists():
+            adapter = ObsidianAdapter(self.vault_path)
+            report, conversions = adapter.adapt_images(
+                report, Path(images_dir), arxiv_id=arxiv_id
+            )
+            images_copied = sum(1 for c in conversions if c.success)
+            if images_copied > 0:
+                logger.info(f"图片复制成功: {images_copied} 张")
+
         # 生成 Markdown 内容（包含 PDF 链接）
         content = self._build_paper_content(
             paper_data, analysis_json, report, pdf_filename=None
         )
 
         # 复制 PDF 并更新链接
-        result = {"md_path": str(md_filepath), "pdf_path": None}
+        result = {"md_path": str(md_filepath), "pdf_path": None, "images_copied": images_copied}
         if pdf_path and os.path.exists(pdf_path):
             pdf_filename = f"{date_str}_{safe_title}.pdf"
             pdf_dest = self.attachments_dir / pdf_filename
