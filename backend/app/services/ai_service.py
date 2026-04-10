@@ -20,6 +20,7 @@ import anthropic
 import httpx
 
 from app.config import get_settings
+from app.config.category_mapping import merge_category_tags_with_ai_tags
 from app.prompts.templates import (
     ANALYSIS_JSON_PROMPT,
     QUICK_MODE_JSON_PROMPT,
@@ -226,6 +227,12 @@ class AIService:
                 result["tags"] = valid_tags
             else:
                 result["tags"] = []
+
+            # 合并分类映射标签和 AI 推断标签（分类标签优先）
+            result["tags"] = merge_category_tags_with_ai_tags(
+                categories=categories,
+                ai_tags=result["tags"]
+            )
 
             # 确保其他字段存在
             if "institutions" not in result:

@@ -25,18 +25,23 @@ class ArxivService:
     提供从 ArXiv API 获取论文并存储到数据库的方法。
     """
 
-    # 支持的 ArXiv 分类
+    # 支持的 ArXiv 分类（使用配置模块）
+    # 保持向后兼容，同时支持新的分层优先级系统
     SUPPORTED_CATEGORIES: List[str] = [
+        # Tier 1 - 核心
         "cs.AI",  # 人工智能
         "cs.CL",  # 计算语言学
         "cs.LG",  # 机器学习
         "cs.CV",  # 计算机视觉
         "cs.NE",  # 神经与进化计算
-        "cs.IR",  # 信息检索
+        # Tier 2 - 重要扩展
         "cs.RO",  # 机器人
-        "cs.SE",  # 软件工程
         "cs.DC",  # 分布式计算
         "cs.CR",  # 密码学与安全
+        "cs.IR",  # 信息检索
+        "cs.SE",  # 软件工程
+        # Tier 3 - 关注
+        "cs.HC",  # 人机交互
         "stat.ML",  # 机器学习（统计）
         "eess.AS",  # 音频信号处理
         "eess.IV",  # 图像视频处理
@@ -390,9 +395,9 @@ class ArxivService:
             - skipped_by_score: 因评分过低跳过的论文数
             - message: 结果消息
         """
-        # 默认分类
+        # 默认分类（使用核心分类）
         if not categories:
-            categories = ["cs.AI", "cs.CL", "cs.LG", "cs.CV"]
+            categories = ["cs.AI", "cs.CL", "cs.LG", "cs.CV", "cs.NE"]
 
         # 处理时区：ArXiv 返回 UTC 时区，确保输入日期也有时区
         if date_from and date_from.tzinfo is None:
@@ -586,7 +591,7 @@ class ArxivService:
             汇总的抓取结果
         """
         if not categories:
-            categories = ["cs.AI", "cs.CL", "cs.LG", "cs.CV"]
+            categories = ["cs.AI", "cs.CL", "cs.LG", "cs.CV", "cs.NE", "cs.RO", "cs.DC"]
 
         total_stats = {
             "total_fetched": 0,
