@@ -3,10 +3,7 @@
 提供论文查询、抓取、分析等 API 端点。
 """
 
-import asyncio
-import json
 import logging
-import subprocess
 from datetime import datetime, timedelta
 from typing import List, Optional
 
@@ -43,6 +40,8 @@ from app.services.ai_service import ai_service
 from app.services.arxiv_service import ArxivService
 from app.services.pdf_service import PDFService, pdf_service
 from app.services.smart_search_service import SmartSearchService
+from app.services.rag_client import get_rag_client
+from app.utils.common import parse_csv_param, calculate_total_pages, calculate_offset
 
 router = APIRouter(prefix="/api", tags=["papers"])
 
@@ -90,7 +89,7 @@ async def get_papers(
 
     # 分类筛选：匹配 JSON 数组中的值
     if categories:
-        category_list = [c.strip() for c in categories.split(",")]
+        category_list = parse_csv_param(categories) or []
         category_conditions = []
         for cat in category_list:
             # SQLite JSON 匹配方式
@@ -99,7 +98,7 @@ async def get_papers(
 
     # 标签筛选：匹配 JSON 数组中的值
     if tags:
-        tag_list = [t.strip() for t in tags.split(",")]
+        tag_list = parse_csv_param(tags) or []
         tag_conditions = []
         for tag in tag_list:
             tag_conditions.append(Paper.tags.like(f'%"{tag}"%'))
@@ -203,39 +202,15 @@ async def smart_search_papers(
     service = SmartSearchService()
 
     # 解析分类列表
-    category_list = None
-    if categories:
-        category_list = [c.strip() for c in categories.split(",")]
+    category_list = parse_csv_param(categories)
 
     # 搜索论文 ID
     if use_semantic:
-        # 使用 bridge.py 子进程进行语义搜索
-        rag_data = []
-        try:
-            settings = get_settings()
-            proc = await asyncio.create_subprocess_exec(
-                settings.rag_python_path,
-                settings.rag_bridge_path,
-                "retrieve",
-                query,
-                "--top-k",
-                "30",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60.0)
-
-            if proc.returncode == 0:
-                rag_data = json.loads(stdout)
-                logger.info(f"RAG 搜索返回 {len(rag_data)} 条结果")
-            else:
-                logger.warning(f"RAG 搜索失败: {stderr.decode()}")
-        except asyncio.TimeoutError:
-            logger.warning("RAG 搜索超时，降级为纯 SQL 搜索")
-        except json.JSONDecodeError as e:
-            logger.warning(f"RAG 结果解析失败: {e}")
-        except Exception as e:
-            logger.warning(f"RAG 搜索异常: {e}")
+        # 调用 RAG 常驻服务进行语义搜索（使用单例连接池）
+        rag_client = get_rag_client()
+        rag_data = await rag_client.retrieve(query, top_k=page_size * 3)
+        if rag_data:
+            logger.info(f"RAG 搜索返回 {len(rag_data)} 条结果")
 
         paper_ids = await service.hybrid_search(
             db, query, rag_data, category_list, tier, top_k=page_size * 3
@@ -247,7 +222,7 @@ async def smart_search_papers(
 
     # 分页处理
     total = len(paper_ids)
-    offset = (page - 1) * page_size
+    offset = calculate_offset(page, page_size)
     page_ids = paper_ids[offset : offset + page_size]
 
     # 查询论文详情
@@ -262,7 +237,7 @@ async def smart_search_papers(
     else:
         papers = []
 
-    total_pages = (total + page_size - 1) // page_size
+    total_pages = calculate_total_pages(total, page_size)
 
     return PaperListResponse(
         papers=[PaperCard.model_validate(p) for p in papers],

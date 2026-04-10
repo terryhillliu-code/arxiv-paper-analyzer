@@ -14,6 +14,16 @@ from app.models import Paper
 
 logger = logging.getLogger(__name__)
 
+# 预编译正则表达式
+_ARXIV_PREFIX_PATTERN = re.compile(r"arxiv:([0-9.]+):")
+_ARXIV_ID_PATTERN = re.compile(r"(\d{4}\.\d{4,5})")
+
+# 常量定义
+QUERY_MAX_LENGTH = 200
+MAX_CATEGORIES = 10
+DEFAULT_TOP_K = 20
+VALID_TIERS = ("A", "B", "C")
+
 
 class SmartSearchService:
     """智能搜索服务类。
@@ -27,9 +37,6 @@ class SmartSearchService:
     - 向量结果补充（语义相关）
     - 去重合并
     """
-
-    def __init__(self):
-        pass
 
     async def sql_search(
         self,
@@ -51,6 +58,9 @@ class SmartSearchService:
         Returns:
             匹配的论文 ID 列表
         """
+        # 输入验证：限制查询长度防止滥用
+        query = query[:QUERY_MAX_LENGTH]
+
         search_pattern = f"%{query}%"
         sql_query = select(Paper.id).where(
             or_(
@@ -63,6 +73,8 @@ class SmartSearchService:
 
         # 分类筛选
         if categories:
+            # 输入验证：限制分类数量
+            categories = categories[:MAX_CATEGORIES]
             cat_conditions = [
                 Paper.categories.like(f'%"{cat}"%') for cat in categories
             ]
@@ -70,7 +82,9 @@ class SmartSearchService:
 
         # Tier 筛选
         if tier:
-            sql_query = sql_query.where(Paper.tier == tier.upper())
+            # 输入验证：只允许有效 Tier 值
+            if tier.upper() in VALID_TIERS:
+                sql_query = sql_query.where(Paper.tier == tier.upper())
 
         sql_query = sql_query.limit(limit)
         result = await db.execute(sql_query)
@@ -96,13 +110,13 @@ class SmartSearchService:
             source = item.get("source", "")
 
             # 格式1: "arxiv:2301.12345:..."
-            match = re.search(r"arxiv:([0-9.]+):", source)
+            match = _ARXIV_PREFIX_PATTERN.search(source)
             if match:
                 arxiv_ids.append(match.group(1))
                 continue
 
             # 格式2: 从文件名提取 (如 "PAPER_2301.12345.md")
-            match = re.search(r"(\d{4}\.\d{4,5})", source)
+            match = _ARXIV_ID_PATTERN.search(source)
             if match:
                 arxiv_ids.append(match.group(1))
 
