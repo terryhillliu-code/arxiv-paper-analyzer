@@ -24,8 +24,6 @@ from app.services.paper_scorer import PaperScorer
 logger = logging.getLogger(__name__)
 
 
-from app.config.categories import get_all_categories
-
 class ArxivService:
     """ArXiv 论文抓取服务。
 
