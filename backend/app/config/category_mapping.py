@@ -118,25 +118,20 @@ def merge_category_tags_with_ai_tags(
     return result[:5]
 
 
-# ==================== 反向映射（标签→分类） ====================
+# ==================== 反向映射（自动生成） ====================
 
-# 标签到可能分类的反向映射（用于推荐）
-TAG_TO_CATEGORY_MAP: Dict[str, List[str]] = {
-    "大模型架构": ["cs.AI", "cs.CL"],
-    "NLP与语言处理": ["cs.CL"],
-    "深度学习": ["cs.LG", "cs.NE", "stat.ML"],
-    "计算机视觉": ["cs.CV", "eess.IV", "cs.GR"],
-    "机器人": ["cs.RO"],
-    "具身智能": ["cs.RO", "cs.AI"],
-    "AI集群": ["cs.DC", "cs.MA"],
-    "分布式训练": ["cs.DC", "cs.LG"],
-    "安全与隐私": ["cs.CR"],
-    "推荐系统": ["cs.IR"],
-    "RAG与知识系统": ["cs.IR", "cs.AI"],
-    "软件工程": ["cs.SE"],
-    "人机交互": ["cs.HC"],
-    "语音处理": ["eess.AS"],
-}
+def _build_reverse_map() -> Dict[str, List[str]]:
+    """从 CATEGORY_TO_TAG_MAP 自动构建反向映射。"""
+    reverse: Dict[str, List[str]] = {}
+    for category, tags in CATEGORY_TO_TAG_MAP.items():
+        for tag in tags:
+            if tag not in reverse:
+                reverse[tag] = []
+            reverse[tag].append(category)
+    return reverse
+
+# 自动生成的标签→分类映射
+TAG_TO_CATEGORY_MAP: Dict[str, List[str]] = _build_reverse_map()
 
 
 def get_categories_for_tag(tag: str) -> List[str]:
