@@ -6,26 +6,25 @@
 
 import sqlite3
 from pathlib import Path
+from db_utils import DB_PATH, KARPATHY_VAULT
 
-def verify_data_integrity():
+
+def verify_data_integrity() -> bool:
     """验证数据完整性"""
-
-    papers_db = Path.home() / "arxiv-paper-analyzer/backend/data/papers.db"
-    karpathy_vault = Path.home() / "KarpathyVault"
 
     print("="*50)
     print("数据完整性验证")
     print("="*50)
 
-    conn = sqlite3.connect(papers_db)
+    conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA foreign_keys = ON")
 
-    # 1. 检查 papers.db 完整性
+    # 检查数据库完整性
     print("\n=== 1. 数据库完整性 ===")
     result = conn.execute("PRAGMA integrity_check").fetchone()
     print(f"papers.db 完整性: {result[0]}")
 
-    # 2. 检查 knowledge_sync 表是否存在
+    # 检查 knowledge_sync 表是否存在
     print("\n=== 2. knowledge_sync 表 ===")
     tables = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='knowledge_sync'"
@@ -37,7 +36,7 @@ def verify_data_integrity():
         conn.close()
         return False
 
-    # 3. 检查外键约束
+    # 检查外键约束
     print("\n=== 3. 外键约束检查 ===")
     orphans = conn.execute("""
         SELECT COUNT(*) FROM knowledge_sync k
@@ -51,7 +50,7 @@ def verify_data_integrity():
     else:
         print("✅ 无孤立记录")
 
-    # 4. 检查唯一约束
+    # 检查唯一约束
     print("\n=== 4. 唯一约束检查 ===")
     duplicates = conn.execute("""
         SELECT paper_id, COUNT(*) as cnt
@@ -66,7 +65,7 @@ def verify_data_integrity():
     else:
         print("✅ 无重复记录")
 
-    # 5. 检查文件系统一致性
+    # 检查文件系统一致性
     print("\n=== 5. 文件系统一致性 ===")
     synced = conn.execute("""
         SELECT raw_path, wiki_path FROM knowledge_sync
@@ -74,14 +73,14 @@ def verify_data_integrity():
     """).fetchall()
 
     missing_files = 0
-    for raw_path, wiki_path in synced[:100]:  # 只检查前100条
+    for raw_path, wiki_path in synced[:100]:
         if raw_path and not Path(raw_path).exists():
             missing_files += 1
             print(f"  缺失文件: {raw_path}")
 
     print(f"缺失文件数: {missing_files}/{len(synced)}")
 
-    # 6. 统计摘要
+    # 统计摘要
     print("\n=== 6. 数据统计 ===")
     stats = {
         "papers_total": conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0],
@@ -95,7 +94,7 @@ def verify_data_integrity():
     for k, v in stats.items():
         print(f"  {k}: {v}")
 
-    # 7. 检查触发器
+    # 检查触发器
     print("\n=== 7. 触发器检查 ===")
     triggers = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='knowledge_sync'"
@@ -106,7 +105,7 @@ def verify_data_integrity():
     else:
         print("⚠️ 无触发器")
 
-    # 8. 检查索引
+    # 检查索引
     print("\n=== 8. 索引检查 ===")
     indexes = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='knowledge_sync'"

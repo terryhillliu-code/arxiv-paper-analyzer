@@ -10,24 +10,19 @@
 
 import sqlite3
 import shutil
-import hashlib
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 import sys
+from db_utils import get_db_checksum, DB_PATH
 
-def get_db_checksum(db_path: str) -> str:
-    """计算数据库 checksum"""
-    with open(db_path, 'rb') as f:
-        return hashlib.sha256(f.read()).hexdigest()
 
-def rollback_knowledge_sync(backup_dir: str = None):
+def rollback_knowledge_sync(backup_dir: Optional[str] = None) -> bool:
     """回滚 knowledge_sync 表
 
     Args:
         backup_dir: 备份目录路径，如果提供则从备份恢复
     """
-
-    papers_db = Path.home() / "arxiv-paper-analyzer/backend/data/papers.db"
 
     print("="*50)
     print("数据库回滚")
@@ -44,23 +39,23 @@ def rollback_knowledge_sync(backup_dir: str = None):
             return False
 
         # 验证备份完整性
-        backup_checksum = get_db_checksum(str(backup_db))
+        backup_checksum = get_db_checksum(backup_db)
         print(f"备份文件: {backup_db}")
         print(f"备份大小: {backup_db.stat().st_size / 1024 / 1024:.1f} MB")
         print(f"备份 checksum: {backup_checksum[:16]}...")
 
         # 创建当前数据库的备份
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        current_backup = papers_db.with_suffix(f".db.before_rollback_{timestamp}")
-        shutil.copy2(papers_db, current_backup)
+        current_backup = DB_PATH.with_suffix(f".db.before_rollback_{timestamp}")
+        shutil.copy2(DB_PATH, current_backup)
         print(f"当前数据库已备份到: {current_backup}")
 
         # 恢复备份
-        shutil.copy2(backup_db, papers_db)
+        shutil.copy2(backup_db, DB_PATH)
         print(f"✅ 已从备份恢复: {backup_db}")
 
         # 验证恢复
-        restored_checksum = get_db_checksum(str(papers_db))
+        restored_checksum = get_db_checksum()
         if restored_checksum == backup_checksum:
             print("✅ 恢复验证通过")
         else:
@@ -71,9 +66,9 @@ def rollback_knowledge_sync(backup_dir: str = None):
 
     # 2. 否则只删除新表
     print(f"\n=== 删除新表 ===")
-    print(f"数据库: {papers_db}")
+    print(f"数据库: {DB_PATH}")
 
-    conn = sqlite3.connect(papers_db)
+    conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA foreign_keys = ON")
 
     # 检查表是否存在

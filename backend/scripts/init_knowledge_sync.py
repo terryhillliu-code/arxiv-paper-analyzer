@@ -5,58 +5,28 @@
 """
 
 import sqlite3
-import hashlib
-import time
 from pathlib import Path
 from datetime import datetime
-
-# ==================== 工具函数 ====================
-
-def get_db_checksum(db_path: str) -> str:
-    """计算数据库 checksum，用于验证备份完整性"""
-    with open(db_path, 'rb') as f:
-        return hashlib.sha256(f.read()).hexdigest()
-
-def validate_path(path: str) -> bool:
-    """验证路径在允许范围内，防止路径遍历攻击"""
-    allowed_prefixes = [
-        str(Path.home() / "KarpathyVault"),
-        str(Path.home() / "Documents" / "ZhiweiVault"),
-    ]
-    abs_path = str(Path(path).resolve())
-    return any(abs_path.startswith(prefix) for prefix in allowed_prefixes)
-
-def with_retry(func, max_retries=3, delay=0.5):
-    """带重试的数据库操作，处理 SQLite 锁冲突"""
-    for attempt in range(max_retries):
-        try:
-            return func()
-        except sqlite3.OperationalError as e:
-            if "database is locked" in str(e) and attempt < max_retries - 1:
-                time.sleep(delay * (attempt + 1))  # 指数退避
-                continue
-            raise
+from db_utils import get_db_checksum, validate_path, with_retry, DB_PATH
 
 # ==================== 主函数 ====================
 
-def init_knowledge_sync():
+def init_knowledge_sync() -> bool:
     """初始化 knowledge_sync 表，从现有数据推断状态"""
 
-    papers_db = Path.home() / "arxiv-paper-analyzer/backend/data/papers.db"
-
-    if not papers_db.exists():
-        print(f"❌ 数据库不存在: {papers_db}")
+    if not DB_PATH.exists():
+        print(f"❌ 数据库不存在: {DB_PATH}")
         return False
 
-    print(f"数据库路径: {papers_db}")
-    print(f"数据库大小: {papers_db.stat().st_size / 1024 / 1024:.1f} MB")
+    print(f"数据库路径: {DB_PATH}")
+    print(f"数据库大小: {DB_PATH.stat().st_size / 1024 / 1024:.1f} MB")
 
     # 1. 计算原始数据库 checksum
     print("\n=== Step 1: 计算原始 checksum ===")
-    original_checksum = get_db_checksum(str(papers_db))
+    original_checksum = get_db_checksum()
     print(f"原始 checksum: {original_checksum[:16]}...")
 
-    conn = sqlite3.connect(papers_db)
+    conn = sqlite3.connect(DB_PATH)
 
     # 2. 启用外键约束（SQLite 默认关闭）
     print("\n=== Step 2: 启用外键约束 ===")
@@ -178,7 +148,7 @@ def init_knowledge_sync():
 
     # 9. 验证 checksum
     print("\n=== Step 9: 验证 checksum ===")
-    final_checksum = get_db_checksum(str(papers_db))
+    final_checksum = get_db_checksum()
     print(f"最终 checksum: {final_checksum[:16]}...")
 
     if inserted > 0 or already_exists > 0:
